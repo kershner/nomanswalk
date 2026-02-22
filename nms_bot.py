@@ -247,7 +247,7 @@ class Command:
 
 
 COMMANDS: dict[str, Command] = {
-    "jet":     Command(jet,     "Jetpack burst — launches you into the air."),
+    "jet":     Command(jet,     "Jetpack burst."),
     "dig":     Command(dig,     "Hold left-click for 3s to dig terrain."),
     "walk":    Command(walk,    "Toggle autowalk on/off."),
     "stop":    Command(stop,    "Stop autowalking."),
@@ -258,7 +258,7 @@ COMMANDS: dict[str, Command] = {
     "left":    Command(left,    "Turn left N steps. e.g. !left 5"),
     "right":   Command(right,   "Turn right N steps. e.g. !right 5"),
     "camera":  Command(camera,  "Toggle third person camera."),
-    "tap_e":   Command(tap_e,   "Rapidly tap E — useful for QTEs."),
+    "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
 }
 
 

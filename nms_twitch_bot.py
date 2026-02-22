@@ -227,7 +227,7 @@ class NMSBot(commands.Bot):
             elif name == "no":
                 await self._cast_vote(ctx, message, "no")
             elif name == "help":
-                await self._do_help(ctx)
+                await self._do_help(ctx, args)
             elif name == "status":
                 await self._do_status(ctx)
             elif name:
@@ -409,9 +409,19 @@ class NMSBot(commands.Bot):
     async def cmd_help(self, ctx: commands.Context):
         await self._do_help(ctx)
 
-    async def _do_help(self, ctx):
-        names = sorted(COMMANDS.keys())
-        await self._say(ctx, "Commands: " + " • ".join(f"!{n}" for n in names))
+    async def _do_help(self, ctx, args=None):
+        if args:
+            name = args[0].lower().lstrip("!")
+            cmd = COMMANDS.get(name)
+            if cmd:
+                await self._say(ctx, f"!{name}: {cmd.help}" if cmd.help else f"!{name}: no description available.")
+            else:
+                await self._say(ctx, f"Unknown command: !{name}")
+            return
+        names = COMMANDS.keys()
+        cmds_text = "Commands: " + " • ".join(f"!{n}" for n in names)
+        cmds_text = f"{cmds_text} • Type !help <cmd> for details."
+        await self._say(ctx, cmds_text)
 
     @commands.command(name="walk")
     async def cmd_walk(self, ctx: commands.Context):
