@@ -1,8 +1,7 @@
-from utils import focus_nms, send_key
+from utils import focus_nms, send_key, log
 import threading
 import win32api
 import win32con
-import logging
 import ctypes
 import json
 import time
@@ -39,7 +38,7 @@ class NMSState:
     def update(cls, state: str, timestamp: float):
         with cls._lock:
             if state != cls._current:
-                logging.info(f"State changed: {cls._current} -> {state}")
+                log(f"State changed: {cls._current} -> {state}")
                 cls._current = state
             cls._timestamp = timestamp
 
@@ -62,9 +61,9 @@ def poll_state():
             check_if_stuck(state, data, ts)
 
         except FileNotFoundError:
-            logging.warning(f"State file not found: {STATE_FILE}")
+            log(f"State file not found: {STATE_FILE}")
         except Exception as e:
-            logging.error(f"State poll error: {e}")
+            log(f"State poll error: {e}")
 
         time.sleep(STATE_POLL_INTERVAL)
 
@@ -101,15 +100,15 @@ def _do_unstuck(timestamp):
     _last_move_t = timestamp
 
     if _stuck_last_cmd == "jet":
-        logging.warning("STUCK: still stuck after jet, trying right 30")
+        log(f"STUCK: still stuck after jet, trying right 30")
         COMMANDS["right"](["30"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
-        logging.warning("STUCK: still stuck after right, trying tap_e")
+        log(f"STUCK: still stuck after right, trying tap_e")
         COMMANDS["tap_e"]()
         _stuck_last_cmd = "tap_e"
     else:  # None or "tap_e"
-        logging.warning("STUCK: trying jet()")
+        log(f"STUCK: trying jet()")
         COMMANDS["jet"]()
         _stuck_last_cmd = "jet"
 
@@ -121,7 +120,7 @@ def is_walking() -> bool:
 def start_state_poller():
     t = threading.Thread(target=poll_state, daemon=True)
     t.start()
-    logging.info("State poller started")
+    log("State poller started")
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +255,7 @@ COMMANDS = {
 
 
 def main():
-    logging.info("NMS bot started")
+    log("NMS bot started")
     start_state_poller()
 
 

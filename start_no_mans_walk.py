@@ -1,7 +1,7 @@
 from utils import BASE_DIR, focus_nms, log, send_key
 import subprocess
+import argparse
 import pyautogui
-import requests
 import win32gui
 import win32api
 import win32con
@@ -32,13 +32,11 @@ DISABLE_HUD_CLICKS = [
 ]
 DISABLE_HUD_MENU_OPEN_DELAY = 2.0
 DISABLE_HUD_ESC_DELAY = 0.8
-DISABLE_HUD_KEY_DELAY = 0.05
-
-WAIT_BEFORE_WALK = 5
 
 VENV_PY = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
-DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
 
+DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
+TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
 
@@ -90,10 +88,19 @@ def disable_hud_clicks():
     return True
 
 
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=["dev", "twitch"], default="dev")
+    return p.parse_args()
+
+
 # ─────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────
 def main():
+    args = parse_args()
+    control_mode = args.mode
+
     pyautogui.FAILSAFE = True
 
     nms_proc = subprocess.Popen(
@@ -116,23 +123,15 @@ def main():
     log("Disabling HUD via menu clicks...")
     disable_hud_clicks()
 
-    log("Starting dev server...")
-    server_proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
-    log(f"Dev server started (PID {server_proc.pid})")
-
-    log(f"Waiting {WAIT_BEFORE_WALK}s before sending walk command...")
-    time.sleep(WAIT_BEFORE_WALK)
-
-    log("Sending walk command via HTTP...")
-    try:
-        r = requests.get(f"{DEV_SERVER_URL}/cmd/walk", timeout=5)
-        if r.ok:
-            log("Walk command sent successfully.")
-        else:
-            log(f"Walk command failed: {r.status_code}")
-    except Exception as e:
-        log(f"Walk request failed: {e}")
-
+    if control_mode == "dev":
+        log("Starting dev server...")
+        proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
+        log(f"Dev server started (PID {proc.pid})")
+    else:
+        log("Starting twitch bot...")
+        proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
+        log(f"Twitch bot started (PID {proc.pid})")
+        
     log("Startup sequence complete.")
 
 

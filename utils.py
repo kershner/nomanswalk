@@ -1,13 +1,14 @@
-import ctypes
 import win32process
 import win32gui
 import win32api
 import win32con
 import pywinauto
 import keyboard
-import time
-import os
 import logging
+import ctypes
+import time
+import json
+import os
 
 
 log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "no_mans_walk.log")
@@ -81,3 +82,36 @@ def focus_nms():
     app = pywinauto.Application(backend="win32").connect(handle=hwnd)
     dlg = app.window(handle=hwnd)
     return hwnd, dlg
+
+
+def get_status_text() -> str:
+    try:
+        from nms_bot import STATE_FILE
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        
+        planet = state.get("planet", {})
+        name = planet.get("name", "unknown")
+        biome = planet.get("biome", "")
+        size = planet.get("planet_size", "")
+        rings = "Ringed" if planet.get("has_rings") else ""
+        
+        weather = planet.get("weather_type", "")
+        weather = f"Weather: {weather}" if weather else ""
+
+        flora = planet.get("life", "")
+        flora = f"Flora: {flora}" if flora else ""
+        
+        fauna = planet.get("creature_life", "")
+        fauna = f"Fauna: {fauna}" if fauna else ""
+        planet_stats = " • ".join(filter(None, [biome, size, rings, weather, flora, fauna]))
+        main_status = f"Walking across {name} in the Euclid galaxy."
+
+        return {
+            "main": main_status,
+            "details": planet_stats
+        }
+
+    except Exception as e:
+        log(f"get_status_text failed: {e}")
+        return "Could not read game state."
