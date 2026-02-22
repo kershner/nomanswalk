@@ -25,6 +25,21 @@ class Config:
 
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
+    SCHEDULED_COMMANDS = [
+        (20 * 60, "_do_help"),    # !help  every 30 minutes
+        (20 * 60, "_do_status"),  # !status every 20 minutes
+    ]
+    
+    ADMIN_ONLY_COMMANDS = {
+        # "camera",
+    }
+
+    VOTABLE_COMMANDS = {
+        # "dig",
+        "camera",
+    }
+
+
     _params: Optional[dict] = None
 
     @classmethod
@@ -52,18 +67,6 @@ class Config:
         users = [str(u).lower() for u in users if u]
         defaults = {cls.TWITCH_CHANNEL}
         return sorted(set(users) | defaults)
-
-
-# Mark commands as admin-only or votable here.
-ADMIN_ONLY_COMMANDS = {
-    # "camera",
-}
-
-VOTABLE_COMMANDS = {
-    # "dig",
-    "camera",
-}
-
 
 # ─────────────────────────────────────────────────────────────
 # OAUTH TOKENS
@@ -201,6 +204,7 @@ class NMSBot(commands.Bot):
             self._worker_task = asyncio.create_task(self._command_worker())
 
         asyncio.create_task(self._refresh_loop())
+        asyncio.create_task(self._start_schedulers())
 
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
@@ -217,13 +221,18 @@ class NMSBot(commands.Bot):
         content = (message.content or "").strip()
         if content.startswith("!"):
             name, args = self._parse_command(content)
-            if name in {"yes", "no", "help", "status"}:
-                await self.handle_commands(message)
-                return
-            if name:
-                ctx = await self.get_context(message)
+            ctx = await self.get_context(message)
+            if name == "yes":
+                await self._cast_vote(ctx, message, "yes")
+            elif name == "no":
+                await self._cast_vote(ctx, message, "no")
+            elif name == "help":
+                await self._do_help(ctx)
+            elif name == "status":
+                await self._do_status(ctx)
+            elif name:
                 await self._dispatch_nms_command(ctx, name, args)
-                return
+            return
 
         await self.handle_commands(message)
 
@@ -243,7 +252,7 @@ class NMSBot(commands.Bot):
             try:
                 func = COMMANDS.get(name)
                 if func:
-                    await asyncio.to_thread(func, args)
+                    await asyncio.to_thread(func.func, args)
             except Exception as e:
                 log(f"Command failed: !{name} {args} ({e})")
             finally:
@@ -288,6 +297,29 @@ class NMSBot(commands.Bot):
             except Exception:
                 await asyncio.sleep(300)
 
+    async def _start_schedulers(self):
+        """Spawn one independent loop per entry in Config.SCHEDULED_COMMANDS."""
+        channel = self.get_channel(Config.TWITCH_CHANNEL)
+        if not channel:
+            return
+        for interval_s, handler_name in Config.SCHEDULED_COMMANDS:
+            asyncio.create_task(self._scheduler_loop(channel, interval_s, handler_name))
+
+    async def _scheduler_loop(self, channel, interval_s: int, handler_name: str):
+        """Wait `interval_s` seconds, then call `self.<handler_name>(channel)`, repeat."""
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            log(f"Scheduler: unknown handler '{handler_name}', skipping.")
+            return
+        log(f"Scheduler: '{handler_name}' will run every {interval_s}s.")
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                await handler(channel)
+            except Exception as e:
+                log(f"Scheduler: '{handler_name}' failed: {e}")
+
+    
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
         if self._vote.active:
             await self._say(ctx, "Vote already in progress.")
@@ -301,7 +333,9 @@ class NMSBot(commands.Bot):
         if starter:
             self._vote.yes.add(starter)
 
-        await self._say(ctx, f"Vote started: !{name} {self._vote.args_raw}".strip())
+        cmd = COMMANDS.get(name)
+        help_text = f"{cmd.help}" if cmd and cmd.help else ""
+        await self._say(ctx, f"Vote started! {help_text} • Type !yes or !no • {Config.VOTING_DURATION} seconds • {self._tally()}")
 
         async def _finish():
             await asyncio.sleep(Config.VOTING_DURATION)
@@ -309,40 +343,54 @@ class NMSBot(commands.Bot):
                 passed = len(self._vote.yes) > len(self._vote.no)
                 yes = len(self._vote.yes)
                 no = len(self._vote.no)
+                cmd = COMMANDS.get(name)
+                help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
                 if passed:
-                    await self._say(ctx, f"Vote passed ({yes}-{no}). Executing.")
+                    await self._say(ctx, f"Vote passed! ({yes}-{no}) • {help_text}")
                     await self._enqueue_command(ctx, name, args)
                 else:
-                    await self._say(ctx, f"Vote failed ({yes}-{no}).")
+                    await self._say(ctx, f"Vote failed! ({yes}-{no}) • {help_text}")
             finally:
                 self._vote.reset()
 
         self._vote.task = asyncio.create_task(_finish())
 
-    @commands.command(name="yes")
-    async def cmd_yes(self, ctx: commands.Context):
+    def _tally(self) -> str:
+        return f"(Yes: {len(self._vote.yes)} | No: {len(self._vote.no)})"
+
+    async def _cast_vote(self, ctx, message, side: str):
         if not self._vote.active:
             return
-        user = (ctx.author.name or "").lower()
+        # Read username directly from message tags — more reliable than ctx.author
+        user = ""
+        try:
+            user = (message.author.name or "").lower()
+        except Exception:
+            pass
+        if not user:
+            try:
+                user = (message.tags or {}).get("display-name", "").lower()
+            except Exception:
+                pass
         if not user:
             return
         if user in self._vote.yes or user in self._vote.no:
             return
-        self._vote.yes.add(user)
-        await self._say(ctx, f"{user} voted YES")
+        if side == "yes":
+            self._vote.yes.add(user)
+            await self._say(ctx, f"{user} voted YES • {self._tally()}")
+        else:
+            self._vote.no.add(user)
+            await self._say(ctx, f"{user} voted NO • {self._tally()}")
+
+    @commands.command(name="yes")
+    async def cmd_yes(self, ctx: commands.Context):
+        await self._cast_vote(ctx, ctx.message, "yes")
 
     @commands.command(name="no")
     async def cmd_no(self, ctx: commands.Context):
-        if not self._vote.active:
-            return
-        user = (ctx.author.name or "").lower()
-        if not user:
-            return
-        if user in self._vote.yes or user in self._vote.no:
-            return
-        self._vote.no.add(user)
-        await self._say(ctx, f"{user} voted NO")
+        await self._cast_vote(ctx, ctx.message, "no")
 
     @commands.command(name="status")
     async def cmd_status(self, ctx: commands.Context):
@@ -376,10 +424,10 @@ class NMSBot(commands.Bot):
         if name not in COMMANDS:
             return
 
-        if name in ADMIN_ONLY_COMMANDS and not self._is_admin(ctx.author.name):
+        if name in Config.ADMIN_ONLY_COMMANDS and not self._is_admin(ctx.author.name):
             return
 
-        if name in VOTABLE_COMMANDS:
+        if name in Config.VOTABLE_COMMANDS:
             await self._start_vote(ctx, name, args)
             return
 

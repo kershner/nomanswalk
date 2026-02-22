@@ -1,4 +1,6 @@
 from utils import focus_nms, send_key, log
+from dataclasses import dataclass
+from typing import Callable
 import threading
 import win32api
 import win32con
@@ -101,15 +103,15 @@ def _do_unstuck(timestamp):
 
     if _stuck_last_cmd == "jet":
         log(f"STUCK: still stuck after jet, trying right 30")
-        COMMANDS["right"](["30"])
+        COMMANDS["right"].func(["30"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
         log(f"STUCK: still stuck after right, trying tap_e")
-        COMMANDS["tap_e"]()
+        COMMANDS["tap_e"].func()
         _stuck_last_cmd = "tap_e"
     else:  # None or "tap_e"
         log(f"STUCK: trying jet()")
-        COMMANDS["jet"]()
+        COMMANDS["jet"].func()
         _stuck_last_cmd = "jet"
 
 
@@ -238,19 +240,25 @@ def tap_e(args=None):
 # ---------------------------------------------------------------------------
 # Command registry
 # ---------------------------------------------------------------------------
-COMMANDS = {
-    "jet":     jet,
-    "dig":     dig,
-    "walk":    walk,
-    "stop":    stop,
-    "forward": forward,
-    "back":    back,
-    "up":      up,
-    "down":    down,
-    "left":    left,
-    "right":   right,
-    "camera":  camera,
-    "tap_e":   tap_e,
+@dataclass
+class Command:
+    func: Callable
+    help: str = ""
+
+
+COMMANDS: dict[str, Command] = {
+    "jet":     Command(jet,     "Jetpack burst — launches you into the air."),
+    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain."),
+    "walk":    Command(walk,    "Toggle autowalk on/off."),
+    "stop":    Command(stop,    "Stop autowalking."),
+    "forward": Command(forward, "Walk forward N steps. e.g. !forward 3"),
+    "back":    Command(back,    "Walk backward N steps. e.g. !back 3"),
+    "up":      Command(up,      "Look up N steps. e.g. !up 5"),
+    "down":    Command(down,    "Look down N steps. e.g. !down 5"),
+    "left":    Command(left,    "Turn left N steps. e.g. !left 5"),
+    "right":   Command(right,   "Turn right N steps. e.g. !right 5"),
+    "camera":  Command(camera,  "Toggle third person camera."),
+    "tap_e":   Command(tap_e,   "Rapidly tap E — useful for QTEs."),
 }
 
 
