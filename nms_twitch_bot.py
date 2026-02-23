@@ -4,6 +4,7 @@ from utils import log, get_status_text
 from dataclasses import dataclass
 from twitchio.ext import commands
 from typing import Optional
+import aiohttp
 import requests
 import asyncio
 import json
@@ -26,10 +27,22 @@ class Config:
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
     SCHEDULED_COMMANDS = [
-        (20 * 60, "_do_help"),    # !help  every 30 minutes
-        (20 * 60, "_do_status"),  # !status every 20 minutes
+        (20 * 60, "_do_help"),    # !help  every 20 minutes
+        (30 * 60, "_do_status"),  # !status every 30 minutes
     ]
     
+    STREAM_TAGS = [
+        "Exploration",
+        "Automation",
+        "Chill",
+        "Cozy",
+        "Interactive",
+        "PC",
+        "Programming",
+        "Casual",
+        "Relaxing"
+    ]
+
     ADMIN_ONLY_COMMANDS = {
         # "camera",
     }
@@ -401,9 +414,52 @@ class NMSBot(commands.Bot):
             status = get_status_text()
             status_text = f'{status.get("main", "")} {status.get("details", "")}'.strip()
             await self._say(ctx, status_text)
+            await self._update_stream_info(title=status.get("main", "").strip())
         except Exception as e:
             log(f"!status failed: {e}")
             await self._say(ctx, "Could not read game state.")
+
+    async def _update_stream_info(self, title: str = ""):
+        """Update the Twitch stream title and tags via the Helix API."""
+        try:
+            client_id = Config.get_client_id()
+            oauth_token = self._access_token
+
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {oauth_token}",
+                    "Content-Type": "application/json",
+                }
+
+                # Get broadcaster ID
+                async with session.get(
+                    f"https://api.twitch.tv/helix/users?login={Config.TWITCH_CHANNEL}",
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        log(f"Stream update: failed to get user ID ({resp.status})")
+                        return
+                    data = await resp.json()
+                    broadcaster_id = data["data"][0]["id"]
+
+                # Patch title and tags in one request
+                async with session.patch(
+                    f"https://api.twitch.tv/helix/channels?broadcaster_id={broadcaster_id}",
+                    headers=headers,
+                    json={
+                        "title": title,
+                        "tags": Config.STREAM_TAGS,
+                    },
+                ) as resp:
+                    if resp.status == 204:
+                        log(f"Stream info updated: title='{title}' tags={Config.STREAM_TAGS}")
+                    else:
+                        text = await resp.text()
+                        log(f"Stream update failed: {resp.status} - {text}")
+
+        except Exception as e:
+            log(f"_update_stream_info error: {e}")
 
     @commands.command(name="help")
     async def cmd_help(self, ctx: commands.Context):

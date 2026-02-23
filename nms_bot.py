@@ -320,7 +320,7 @@ COMMANDS: dict[str, Command] = {
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
-    "music":   Command(music,   "Toggles music on/off."),
+    # "music":   Command(music,   "Toggles music on/off."),
 }
 
 
