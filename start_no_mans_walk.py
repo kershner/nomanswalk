@@ -11,7 +11,7 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 30
+WAIT_FOR_MODE_SELECT = 35
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
@@ -19,7 +19,7 @@ MENU_CLICKS = [
     (0.50, 0.35, 2.0),  # Save slot 1 select
 ]
 
-WAIT_FOR_GAME_LOAD = 60
+WAIT_FOR_GAME_LOAD = 55
 
 # Disable HUD sequence
 DISABLE_HUD_CLICKS = [
@@ -37,8 +37,8 @@ DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
 TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
-OBS_EXE = r"C:\Program Files\obs-studio\bin\64bit\obs64.exe"
-WAIT_FOR_OBS_STREAM = 15  # seconds to wait after OBS launches for stream to go live
+OBS_EXE = r"C:\OBS\bin\64bit\obs64.exe"
+WAIT_FOR_OBS_STREAM = 25  # seconds to wait after OBS launches for stream to go live
 
 VIRTUAL_AUDIO_DEVICE = "VB-Audio Virtual Cable"
 SOUNDVOLUMEVIEW_PATH = r"E:\NMS Modding\no_mans_walk\utilities\SoundVolumeView\SoundVolumeView.exe"
@@ -182,14 +182,12 @@ def main():
     disable_hud_clicks()
 
     if control_mode == "twitch":
-        log("Routing NMS audio to virtual cable...")
-        set_nms_audio_device()
-        start_obs()
-        log("Refocusing NMS window after OBS launch...")
-        focus_nms()
         log("Starting Twitch bot...")
         proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
         log(f"Twitch bot started (PID {proc.pid})")
+        log("Routing NMS audio to virtual cable...")
+        set_nms_audio_device()
+        start_obs()
     else:
         log("Dev mode — skipping OBS and Twitch bot.")
         log("Starting dev server...")
