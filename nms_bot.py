@@ -1,4 +1,4 @@
-from utils import focus_nms, send_key, log
+from utils import focus_nms, send_key, log, click_at_percent
 from dataclasses import dataclass
 from typing import Callable
 import threading
@@ -151,6 +151,12 @@ def _clamp(val, lo=1, hi=50) -> int:
         return lo
 
 
+def right_mouse_click():
+    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+    time.sleep(0.1)
+    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -237,6 +243,60 @@ def tap_e(args=None):
         time.sleep(0.05)
 
 
+def coords(args=None):
+    """CTRL + 2 to show photo mode for 10 seconds (shows coordinates)"""
+    focus_nms()
+    send_key("2", 0.1, ["ctrl"])
+    time.sleep(10)
+    right_mouse_click()
+
+
+# TODO - fix this one
+def music(args=None):
+    """Toggle music on or off. Usage: music on / music off"""
+    mode = (args[0].lower() if args else "on")
+
+    ARROW_POS = {
+        "on":  (0.80, 0.50),
+        "off": (0.51, 0.50),
+    }
+
+    if mode not in ARROW_POS:
+        log(f"music: unknown mode '{mode}', use 'on' or 'off'")
+        return
+
+    NAV_CLICKS = [
+        (0.73, 0.05, 1.5),  # OPTIONS tab
+        (0.10, 0.80, 1.5),  # General
+    ]
+
+    focus_nms()
+    send_key("esc", 0.1)
+
+    log(f"Toggle music: navigating to options ({mode})...")
+    for px, py, delay in NAV_CLICKS:
+        click_at_percent(px, py, delay_after=delay)
+        time.sleep(0.1)
+
+    # Click arrow 50x
+    ax, ay = ARROW_POS[mode]
+    click_at_percent(ax, ay)
+    for _ in range(120):
+        click_at_percent(ax, ay, delay_after=0.01, move_cursor=False)
+    
+    send_key("esc", 0.1)
+    time.sleep(1.0)
+
+    # Apply btn
+    apply_btn_pos = (0.20, 0.7)
+    if mode == "off":
+        apply_btn_pos = (0.50, 0.7)
+    click_at_percent(apply_btn_pos[0], apply_btn_pos[1], delay_after=1.5)
+    
+    time.sleep(1.0)
+    send_key("esc", 0.1)
+
+
 # ---------------------------------------------------------------------------
 # Command registry
 # ---------------------------------------------------------------------------
@@ -259,6 +319,8 @@ COMMANDS: dict[str, Command] = {
     "right":   Command(right,   "Turn right N steps. e.g. !right 5"),
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
+    "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
+    "music":   Command(music,   "Toggles music on/off."),
 }
 
 

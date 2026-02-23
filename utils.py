@@ -30,6 +30,35 @@ def log(msg):
     logging.info(f"{msg}")
 
 
+def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
+    hwnd, _dlg = focus_nms()
+    if not hwnd:
+        return
+
+    left, top, right, bottom = win32gui.GetClientRect(hwnd)
+    w = right - left
+    h = bottom - top
+
+    cx = int(w * px)
+    cy = int(h * py)
+
+    ox, oy = win32gui.ClientToScreen(hwnd, (0, 0))
+    sx = ox + cx
+    sy = oy + cy
+
+    if move_cursor:
+        win32api.SetCursorPos((sx, sy))
+        time.sleep(0.05)
+
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.02)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+    if move_cursor:
+        log(f"Clicked ({px:.2f}, {py:.2f}) -> screen ({sx}, {sy})")
+    time.sleep(delay_after)
+
+
 def send_key(key: str, duration: float = 0.1, modifiers: list[str] | None = None):
     """Focus NMS then send key or key combo."""
     hwnd, dlg = focus_nms()

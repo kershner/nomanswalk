@@ -21,7 +21,7 @@ def run_command(raw):
     if name not in COMMANDS:
         return jsonify({"ok": False, "error": f"unknown command: {name}"}), 404
     try:
-        COMMANDS[name](args)
+        COMMANDS[name].func(args)
         return jsonify({"ok": True, "cmd": name})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

@@ -35,8 +35,8 @@ class Config:
     }
 
     VOTABLE_COMMANDS = {
-        # "dig",
         "camera",
+        "coords"
     }
 
 
