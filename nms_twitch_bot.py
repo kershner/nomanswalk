@@ -1,9 +1,10 @@
-from nms_bot import COMMANDS, start_state_poller
+from nms_bot import COMMANDS, start_state_poller, left_click
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from dataclasses import dataclass
 from twitchio.ext import commands
 from typing import Optional
+import nms_bluesky
 import aiohttp
 import requests
 import asyncio
@@ -185,12 +186,19 @@ class NMSBot(commands.Bot):
         tokens = self._tokens.ensure_fresh()
         self._access_token = str(tokens.get("access_token") or "").strip()
 
+        self._bsky = None
+
         super().__init__(
             token=self._access_token,
             prefix="!",
             initial_channels=[Config.TWITCH_CHANNEL],
         )
 
+        try:
+            self._bsky = nms_bluesky.login()
+            log("Bluesky logged in.")
+        except Exception as e:
+            log(f"Bluesky login failed: {e}")
     
     def _parse_command(self, content: str) -> tuple[str, list[str]]:
         # content like: "!walk" or "!forward 3"
@@ -215,17 +223,23 @@ class NMSBot(commands.Bot):
 
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._command_worker())
+            log("Command worker started.")
 
         asyncio.create_task(self._refresh_loop())
         asyncio.create_task(self._start_schedulers())
 
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
-            # Startup sequence
+            log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
             await self._do_help(channel)
             await self._do_status(channel)
+            
+            await asyncio.to_thread(left_click)
+            await asyncio.sleep(0.3)
+            
             await self._do_walk(channel)
+            log("Startup sequence: complete.")
 
     async def event_message(self, message):
         if message.echo:
@@ -261,11 +275,15 @@ class NMSBot(commands.Bot):
     async def _command_worker(self):
         while True:
             name, args = await self._cmd_queue.get()
+            log(f"Command worker: executing !{name} {args}")
             self._executing = True
             try:
                 func = COMMANDS.get(name)
                 if func:
                     await asyncio.to_thread(func.func, args)
+                    log(f"Command worker: !{name} complete.")
+                else:
+                    log(f"Command worker: no func found for !{name}")
             except Exception as e:
                 log(f"Command failed: !{name} {args} ({e})")
             finally:
@@ -418,6 +436,10 @@ class NMSBot(commands.Bot):
         except Exception as e:
             log(f"!status failed: {e}")
             await self._say(ctx, "Could not read game state.")
+            return
+
+        if self._bsky:
+            nms_bluesky.ensure_live(self._bsky, status.get("main", "").strip())
 
     async def _update_stream_info(self, title: str = ""):
         """Update the Twitch stream title and tags via the Helix API."""
@@ -470,12 +492,15 @@ class NMSBot(commands.Bot):
             name = args[0].lower().lstrip("!")
             cmd = COMMANDS.get(name)
             if cmd:
-                await self._say(ctx, f"!{name}: {cmd.help}" if cmd.help else f"!{name}: no description available.")
+                alias_str = (f" (aliases: {', '.join('!' + a for a in cmd.aliases)})" if cmd.aliases else "")
+                await self._say(ctx, f"!{name}: {cmd.help}{alias_str}" if cmd.help else f"!{name}: no description available.{alias_str}")
             else:
                 await self._say(ctx, f"Unknown command: !{name}")
             return
-        names = COMMANDS.keys()
-        cmds_text = "Commands: " + " • ".join(f"!{n}" for n in names)
+        # Only show canonical names, not aliases, in the command list
+        all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
+        primary_names = [n for n in COMMANDS if n not in all_aliases]
+        cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
         cmds_text = f"{cmds_text} • Type !help <cmd> for details."
         await self._say(ctx, cmds_text)
 

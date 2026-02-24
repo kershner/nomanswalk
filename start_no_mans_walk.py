@@ -1,8 +1,7 @@
 from utils import BASE_DIR, focus_nms, log, send_key, click_at_percent
 import subprocess
-import argparse
 import pyautogui
-import pygetwindow as gw
+import argparse
 import time
 import sys
 import os
@@ -38,7 +37,6 @@ TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
 OBS_EXE = r"C:\OBS\bin\64bit\obs64.exe"
-WAIT_FOR_OBS_STREAM = 25  # seconds to wait after OBS launches for stream to go live
 
 VIRTUAL_AUDIO_DEVICE = "VB-Audio Virtual Cable"
 SOUNDVOLUMEVIEW_PATH = r"E:\NMS Modding\no_mans_walk\utilities\SoundVolumeView\SoundVolumeView.exe"
@@ -55,31 +53,6 @@ def is_process_running(process_name):
     return False
 
 
-def close_obs_safe_mode_prompt():
-    """Close any pre-existing OBS warning/crash dialog before launch."""
-    time.sleep(1)
-    for window in gw.getAllWindows():
-        if "OBS Studio" in window.title and "Warning" in window.title:
-            log("Closing existing OBS warning dialog...")
-            window.activate()
-            time.sleep(0.5)
-            pyautogui.press("enter")
-            time.sleep(1)
-
-
-def handle_obs_safe_mode_prompt():
-    """Dismiss the 'Run in Safe Mode?' prompt if it appears after launch."""
-    time.sleep(3)
-    for window in gw.getAllWindows():
-        if "OBS Studio" in window.title and "Safe Mode" in window.title:
-            log("OBS Safe Mode prompt detected — selecting 'Run Normally'...")
-            window.activate()
-            time.sleep(0.5)
-            pyautogui.press("tab")
-            pyautogui.press("enter")
-            time.sleep(1)
-
-
 def start_obs():
     """Launch OBS with --startstreaming and wait for the stream to be live."""
     if is_process_running("obs64.exe"):
@@ -88,21 +61,15 @@ def start_obs():
 
     log("Starting OBS Studio and streaming...")
     try:
-        close_obs_safe_mode_prompt()
-
         subprocess.Popen(
-            [OBS_EXE, "--startstreaming", "--multi"],
+            [OBS_EXE, "--startstreaming", "--multi", "--minimize-to-tray"],
             cwd=os.path.dirname(OBS_EXE),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             shell=False,
         )
 
-        time.sleep(5)  # Give OBS time to initialise
-        handle_obs_safe_mode_prompt()
-
-        log(f"Waiting {WAIT_FOR_OBS_STREAM}s for stream to go live...")
-        time.sleep(WAIT_FOR_OBS_STREAM)
+        time.sleep(5)
         log("OBS stream should be live.")
 
     except Exception as e:
@@ -159,8 +126,6 @@ def main():
     args = parse_args()
     control_mode = args.mode
 
-    pyautogui.FAILSAFE = True
-
     nms_proc = subprocess.Popen(
         [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "state_logger.py"],
         cwd=BASE_DIR,
@@ -182,18 +147,19 @@ def main():
     disable_hud_clicks()
 
     if control_mode == "twitch":
+        log("Starting OBS...")
+        set_nms_audio_device()
+        start_obs()
+        
         log("Starting Twitch bot...")
         proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
         log(f"Twitch bot started (PID {proc.pid})")
-        log("Routing NMS audio to virtual cable...")
-        set_nms_audio_device()
-        start_obs()
     else:
         log("Dev mode — skipping OBS and Twitch bot.")
         log("Starting dev server...")
         proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
         log(f"Dev server started (PID {proc.pid})")
-
+    
     log("Startup sequence complete.")
 
 

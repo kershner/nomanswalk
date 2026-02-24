@@ -17,8 +17,8 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nms_state
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
-STUCK_EPS = 5.0        # movement threshold
-STUCK_SECONDS = 10      # time without movement
+STUCK_EPS = 5.0          # movement threshold
+STUCK_SECONDS = 10       # time without movement
 
 _last_walk_t = 0.0
 _last_stop_t = 0.0
@@ -84,14 +84,15 @@ def check_if_stuck(state, data, timestamp):
     if state == "ON_FOOT" and isinstance(x, (int, float)) and isinstance(y, (int, float)):
         xy = (float(x), float(y))
         if _last_xy is None:
-            _last_xy, _last_move_t = xy, timestamp
+            _last_xy = xy
+            _last_move_t = time.time()  # use wall clock, not game timestamp
         elif math.hypot(xy[0] - _last_xy[0], xy[1] - _last_xy[1]) >= STUCK_EPS:
             # Moving again — reset everything
-            _last_xy, _last_move_t, _stuck, _stuck_last_cmd = xy, timestamp, False, None
-        elif not _stuck and (timestamp - _last_move_t) >= STUCK_SECONDS:
+            _last_xy, _last_move_t, _stuck, _stuck_last_cmd = xy, time.time(), False, None
+        elif not _stuck and (time.time() - _last_move_t) >= STUCK_SECONDS:
             _stuck = True
             _do_unstuck(timestamp)
-        elif _stuck and (timestamp - _last_move_t) >= STUCK_SECONDS:
+        elif _stuck and (time.time() - _last_move_t) >= STUCK_SECONDS:
             # Still stuck after last attempt — try next action
             _do_unstuck(timestamp)
 
@@ -99,7 +100,7 @@ def check_if_stuck(state, data, timestamp):
 def _do_unstuck(timestamp):
     global _stuck_last_cmd, _last_move_t
 
-    _last_move_t = timestamp
+    _last_move_t = time.time()
 
     if _stuck_last_cmd == "jet":
         log(f"STUCK: still stuck after jet, trying right 30")
@@ -170,10 +171,12 @@ def dig(args=None):
 
 
 def walk(args=None):
-    global _last_walk_t
+    global _last_walk_t, _last_move_t, _last_xy
     """Toggle autowalk (backslash)"""
-    send_key("\\", 0.1)
+    send_key("k", 0.1)
     _last_walk_t = time.time()
+    _last_move_t = time.time()   # reset stuck timer so it doesn't fire immediately
+    _last_xy = None              # reset position baseline
 
 
 def stop(args=None):
@@ -245,10 +248,17 @@ def tap_e(args=None):
 
 def coords(args=None):
     """CTRL + 2 to show photo mode for 10 seconds (shows coordinates)"""
+    was_walking = is_walking()
+    global _last_stop_t
+    _last_stop_t = time.time()  # pause stuck-checking for the duration
+
     focus_nms()
     send_key("2", 0.1, ["ctrl"])
     time.sleep(10)
     right_mouse_click()
+
+    if was_walking:
+        walk()  # right_mouse_click() stops autowalk in-game, so re-engage it
 
 
 # TODO - fix this one
@@ -304,24 +314,32 @@ def music(args=None):
 class Command:
     func: Callable
     help: str = ""
+    aliases: tuple = ()   # e.g. aliases=("f", "fw")
 
 
 COMMANDS: dict[str, Command] = {
-    "jet":     Command(jet,     "Jetpack burst."),
-    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain."),
+    "jet":     Command(jet,     "Jetpack burst.",                         aliases=("j",)),
+    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain.", aliases=("d",)),
     "walk":    Command(walk,    "Toggle autowalk on/off."),
     "stop":    Command(stop,    "Stop autowalking."),
-    "forward": Command(forward, "Walk forward N steps. e.g. !forward 3"),
-    "back":    Command(back,    "Walk backward N steps. e.g. !back 3"),
-    "up":      Command(up,      "Look up N steps. e.g. !up 5"),
-    "down":    Command(down,    "Look down N steps. e.g. !down 5"),
-    "left":    Command(left,    "Turn left N steps. e.g. !left 5"),
-    "right":   Command(right,   "Turn right N steps. e.g. !right 5"),
+    "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
+    "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
+    "up":      Command(up,      "Look up N steps. e.g. !up 5",           aliases=("u",)),
+    "down":    Command(down,    "Look down N steps. e.g. !down 5",       aliases=("dn",)),
+    "left":    Command(left,    "Turn left N steps. e.g. !left 5",       aliases=("l",)),
+    "right":   Command(right,   "Turn right N steps. e.g. !right 5",     aliases=("r",)),
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
     # "music":   Command(music,   "Toggles music on/off."),
 }
+
+# Expand aliases into COMMANDS so lookups work transparently.
+# Alias entries point to the same Command object as the canonical name.
+for _cmd in list(COMMANDS.values()):
+    for _alias in _cmd.aliases:
+        if _alias not in COMMANDS:
+            COMMANDS[_alias] = _cmd
 
 
 def main():
