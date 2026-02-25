@@ -17,7 +17,8 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nms_state
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
-STUCK_EPS = 8.0          # movement threshold
+STUCK_USE_Z = True
+STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
 
 _last_walk_t = 0.0
@@ -79,22 +80,66 @@ def check_if_stuck(state, data, timestamp):
         _stuck_last_cmd = None
         return
 
+    if state != "ON_FOOT":
+        # Optional: uncomment if you want visibility when stuck-check is skipped.
+        # log(f"STUCK-CHECK: skipped (state={state})")
+        return
+
     pos = (data.get("environment") or {}).get("player_position") or {}
-    x, y = pos.get("x"), pos.get("y")
-    if state == "ON_FOOT" and isinstance(x, (int, float)) and isinstance(y, (int, float)):
-        xy = (float(x), float(y))
-        if _last_xy is None:
-            _last_xy = xy
-            _last_move_t = time.time()  # use wall clock, not game timestamp
-        elif math.hypot(xy[0] - _last_xy[0], xy[1] - _last_xy[1]) >= STUCK_EPS:
-            # Moving again — reset everything
-            _last_xy, _last_move_t, _stuck, _stuck_last_cmd = xy, time.time(), False, None
-        elif not _stuck and (time.time() - _last_move_t) >= STUCK_SECONDS:
-            _stuck = True
-            _do_unstuck(timestamp)
-        elif _stuck and (time.time() - _last_move_t) >= STUCK_SECONDS:
-            # Still stuck after last attempt — try next action
-            _do_unstuck(timestamp)
+    x, y, z = pos.get("x"), pos.get("y"), pos.get("z")
+
+    has_xy = isinstance(x, (int, float)) and isinstance(y, (int, float))
+    has_z = isinstance(z, (int, float))
+
+    if not has_xy:
+        # Optional: uncomment if you want visibility when stuck-check is skipped.
+        # log(f"STUCK-CHECK: skipped (bad coords x={x!r} y={y!r} z={z!r})")
+        return
+
+    # Keep _last_xy as a 2-tuple or 3-tuple depending on whether we’re using Z.
+    use_z = STUCK_USE_Z and has_z
+    cur = (float(x), float(y), float(z)) if use_z else (float(x), float(y))
+
+    def dist(a, b) -> float:
+        if len(a) == 3 and len(b) == 3:
+            return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
+        return math.hypot(a[0]-b[0], a[1]-b[1])
+
+    now = time.time()
+
+    if _last_xy is None:
+        _last_xy = cur
+        _last_move_t = now  # wall clock
+        return
+
+    d = dist(cur, _last_xy)
+    elapsed = now - _last_move_t
+
+    if d >= STUCK_EPS:
+        # Moving again — reset everything
+        _last_xy, _last_move_t, _stuck, _stuck_last_cmd = cur, now, False, None
+        return
+
+    if (not _stuck) and elapsed >= STUCK_SECONDS:
+        _stuck = True
+        log(
+            "STUCK: trigger fired "
+            f"(state={state}, use_z={use_z}, d={d:.3f} < eps={STUCK_EPS}, "
+            f"elapsed={elapsed:.2f}s >= {STUCK_SECONDS}s, "
+            f"last={_last_xy}, cur={cur}, last_cmd={_stuck_last_cmd})"
+        )
+        _do_unstuck(timestamp)
+        return
+
+    if _stuck and elapsed >= STUCK_SECONDS:
+        log(
+            "STUCK: still stuck "
+            f"(state={state}, use_z={use_z}, d={d:.3f} < eps={STUCK_EPS}, "
+            f"elapsed={elapsed:.2f}s >= {STUCK_SECONDS}s, "
+            f"last={_last_xy}, cur={cur}, last_cmd={_stuck_last_cmd})"
+        )
+        _do_unstuck(timestamp)
+        return
 
 
 def _do_unstuck(timestamp):
