@@ -53,6 +53,7 @@ class Config:
         "coords"
     }
 
+    CLIP_POST_DELAY_MINUTES = 120
 
     _params: Optional[dict] = None
 
@@ -187,6 +188,7 @@ class NMSBot(commands.Bot):
         self._access_token = str(tokens.get("access_token") or "").strip()
 
         self._bsky = None
+        self._clip_task: Optional[asyncio.Task] = None
 
         super().__init__(
             token=self._access_token,
@@ -227,6 +229,9 @@ class NMSBot(commands.Bot):
 
         asyncio.create_task(self._refresh_loop())
         asyncio.create_task(self._start_schedulers())
+
+        if self._bsky and self._clip_task is None:
+            self._clip_task = asyncio.create_task(self._delayed_clip_post())
 
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
@@ -350,6 +355,22 @@ class NMSBot(commands.Bot):
             except Exception as e:
                 log(f"Scheduler: '{handler_name}' failed: {e}")
 
+    
+    async def _delayed_clip_post(self):
+        delay_s = Config.CLIP_POST_DELAY_MINUTES * 60
+        log(f"Clip scheduler: posting in {Config.CLIP_POST_DELAY_MINUTES} minutes.")
+        await asyncio.sleep(delay_s)
+
+        if not self._bsky:
+            log("Clip scheduler: no Bluesky client.")
+            return
+
+        try:
+            await asyncio.to_thread(nms_bluesky.post_clip, self._bsky)
+            log("Clip scheduler: post_clip() complete.")
+        except Exception as e:
+            log(f"Clip scheduler failed: {e}")
+    
     
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
         if self._vote.active:

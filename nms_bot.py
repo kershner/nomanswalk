@@ -17,7 +17,7 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nms_state
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
-STUCK_EPS = 5.0          # movement threshold
+STUCK_EPS = 8.0          # movement threshold
 STUCK_SECONDS = 10       # time without movement
 
 _last_walk_t = 0.0
