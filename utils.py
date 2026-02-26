@@ -121,8 +121,8 @@ def get_status_text() -> str:
         
         planet = state.get("planet", {})
         name = planet.get("name", "unknown")
-        biome = planet.get("biome", "")
-        size = planet.get("planet_size", "")
+        biome = f"Biome: {planet.get('biome', 'unknown')}"
+        size = f"Size: {planet.get('planet_size', 'unknown')}"
         rings = "Ringed" if planet.get("has_rings") else ""
         
         weather = planet.get("weather_type", "")
