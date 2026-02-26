@@ -1,4 +1,5 @@
 from utils import BASE_DIR, focus_nms, log, send_key, click_at_percent
+from nms_bot import PLANET_LOAD_SECONDS
 import subprocess
 import pyautogui
 import argparse
@@ -113,6 +114,19 @@ def disable_hud_clicks():
     return True
 
 
+def teleport_to_new_planet():
+    """Focus NMS, send the teleport key, and wait for the planet to load."""
+    log("Teleporting to new planet before stream starts...")
+    hwnd, _ = focus_nms()
+    if not hwnd:
+        log("WARNING: Could not focus NMS for teleport — skipping.")
+        return
+    send_key("o", 0.1)
+    log(f"Teleport key sent. Waiting {PLANET_LOAD_SECONDS}s for planet to load...")
+    time.sleep(PLANET_LOAD_SECONDS)
+    log("Planet load wait complete.")
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["dev", "twitch"], default="dev")
@@ -127,7 +141,7 @@ def main():
     control_mode = args.mode
 
     nms_proc = subprocess.Popen(
-        [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "state_logger.py"],
+        [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy_mods.py"],
         cwd=BASE_DIR,
     )
     log(f"NMS process started (PID {nms_proc.pid})")
@@ -145,6 +159,9 @@ def main():
 
     log("Disabling HUD via menu clicks...")
     disable_hud_clicks()
+
+    log("Teleporting to starting planet...")
+    teleport_to_new_planet()
 
     if control_mode == "twitch":
         log("Starting OBS...")

@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, start_state_poller, left_click
+from nms_bot import COMMANDS, start_state_poller, left_click, is_planet_loading
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from dataclasses import dataclass
@@ -45,7 +45,7 @@ class Config:
     ]
 
     ADMIN_ONLY_COMMANDS = {
-        # "camera",
+        "teleport",
     }
 
     VOTABLE_COMMANDS = {
@@ -239,10 +239,10 @@ class NMSBot(commands.Bot):
             await self._say(channel, "No Man's Walk is online!")
             await self._do_help(channel)
             await self._do_status(channel)
-            
+
             await asyncio.to_thread(left_click)
             await asyncio.sleep(0.3)
-            
+
             await self._do_walk(channel)
             log("Startup sequence: complete.")
 
@@ -294,6 +294,20 @@ class NMSBot(commands.Bot):
             finally:
                 self._executing = False
                 self._cmd_queue.task_done()
+
+            # After teleport, drain anything that snuck into the queue during
+            # the tiny window before the loading flag was raised.
+            if name == "teleport":
+                drained = 0
+                while not self._cmd_queue.empty():
+                    try:
+                        self._cmd_queue.get_nowait()
+                        self._cmd_queue.task_done()
+                        drained += 1
+                    except asyncio.QueueEmpty:
+                        break
+                if drained:
+                    log(f"Teleport: drained {drained} stale command(s) from queue.")
 
     async def _enqueue_command(self, ctx: commands.Context, name: str, args: list[str]):
         was_busy = self._executing or (self._cmd_queue.qsize() > 0)
@@ -518,9 +532,9 @@ class NMSBot(commands.Bot):
             else:
                 await self._say(ctx, f"Unknown command: !{name}")
             return
-        # Only show canonical names, not aliases, in the command list
+        # Only show canonical names, not aliases or hidden commands, in the command list
         all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
-        primary_names = [n for n in COMMANDS if n not in all_aliases]
+        primary_names = [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
         cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
         cmds_text = f"{cmds_text} • Type !help <cmd> for details."
         await self._say(ctx, cmds_text)
@@ -537,6 +551,10 @@ class NMSBot(commands.Bot):
             return
 
         if name in Config.ADMIN_ONLY_COMMANDS and not self._is_admin(ctx.author.name):
+            return
+
+        if is_planet_loading():
+            await self._say(ctx, "Planet loading — please wait before sending commands.")
             return
 
         if name in Config.VOTABLE_COMMANDS:

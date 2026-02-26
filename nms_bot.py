@@ -21,12 +21,31 @@ STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
 
+PLANET_LOAD_SECONDS = 45  # how long to wait for a new planet to load after teleport
+
 _last_walk_t = 0.0
 _last_stop_t = 0.0
 _last_xy = None
 _last_move_t = 0.0
 _stuck = False
-_stuck_last_cmd = None 
+_stuck_last_cmd = None
+
+# Planet-load lockout — set during teleport to pause stuck-checking and
+# block new commands in the Twitch bot.
+_planet_loading = False
+_planet_loading_lock = threading.Lock()
+
+
+def set_planet_loading(val: bool):
+    global _planet_loading
+    with _planet_loading_lock:
+        _planet_loading = bool(val)
+    log(f"Planet loading: {val}")
+
+
+def is_planet_loading() -> bool:
+    with _planet_loading_lock:
+        return _planet_loading
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +92,9 @@ def poll_state():
 
 def check_if_stuck(state, data, timestamp):
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
+
+    if is_planet_loading():
+        return  # ignore movement data while a new planet is loading
 
     if not is_walking():
         _stuck = False
@@ -351,6 +373,25 @@ def music(args=None):
     time.sleep(1.0)
     send_key("esc", 0.1)
 
+def teleport(args=None):
+    """Send the 'O' key to trigger a random planet teleport, then wait for the planet to load."""
+    global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
+    set_planet_loading(True)
+    try:
+        send_key("o", 0.1)
+        log(f"Teleport: waiting {PLANET_LOAD_SECONDS}s for planet to load...")
+        time.sleep(PLANET_LOAD_SECONDS)
+
+        # Reset stuck-checker state so stale position data doesn't fire immediately
+        _last_xy = None
+        _last_move_t = time.time()
+        _stuck = False
+        _stuck_last_cmd = None
+        log("Teleport: planet load wait complete.")
+        walk()
+    finally:
+        set_planet_loading(False)
+
 
 # ---------------------------------------------------------------------------
 # Command registry
@@ -360,6 +401,7 @@ class Command:
     func: Callable
     help: str = ""
     aliases: tuple = ()   # e.g. aliases=("f", "fw")
+    hidden: bool = False  # if True, omitted from !help listing
 
 
 COMMANDS: dict[str, Command] = {
@@ -375,7 +417,8 @@ COMMANDS: dict[str, Command] = {
     "right":   Command(right,   "Turn right N steps. e.g. !right 5",     aliases=("r",)),
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
-    "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
+    "coords":  Command(coords,   "Show planet coordinates for 10 seconds."),
+    "teleport": Command(teleport, "Teleport to a random planet.", hidden=True),
     # "music":   Command(music,   "Toggles music on/off."),
 }
 
