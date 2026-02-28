@@ -113,34 +113,39 @@ def focus_nms():
     return hwnd, dlg
 
 
-def get_status_text() -> str:
+def get_status_text(countdown: str = "") -> dict:
     try:
         from nms_bot import STATE_FILE
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
-        
+
         planet = state.get("planet", {})
         name = planet.get("name", "unknown")
         biome = f"Biome: {planet.get('biome', 'unknown')}"
         size = f"Size: {planet.get('planet_size', 'unknown')}"
         rings = "Ringed" if planet.get("has_rings") else ""
-        
+
         weather = planet.get("weather_type", "")
         weather = f"Weather: {weather}" if weather else ""
 
         flora = planet.get("life", "")
         flora = f"Flora: {flora}" if flora else ""
-        
+
         fauna = planet.get("creature_life", "")
         fauna = f"Fauna: {fauna}" if fauna else ""
+
         planet_stats = " • ".join(filter(None, [biome, size, rings, weather, flora, fauna]))
-        main_status = f"Walking across {name} in the Euclid galaxy."
+
+        main_parts = [f"Walking across {name}"]
+        if countdown:
+            main_parts.append(f"New planet in {countdown}")
+        main_status = " • ".join(main_parts)
 
         return {
             "main": main_status,
-            "details": planet_stats
+            "details": planet_stats,
         }
 
     except Exception as e:
         log(f"get_status_text failed: {e}")
-        return "Could not read game state."
+        return {"main": "Could not read game state.", "details": ""}

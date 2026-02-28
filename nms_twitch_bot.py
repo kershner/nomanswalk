@@ -190,6 +190,10 @@ class NMSBot(commands.Bot):
         self._bsky = None
         self._clip_task: Optional[asyncio.Task] = None
 
+        self._teleport_interval_s = 6 * 3600  # 6 hours
+        self._next_teleport_time: float = time.time() + self._teleport_interval_s
+        self._teleport_loop_task: Optional[asyncio.Task] = None
+
         super().__init__(
             token=self._access_token,
             prefix="!",
@@ -229,6 +233,10 @@ class NMSBot(commands.Bot):
 
         asyncio.create_task(self._refresh_loop())
         asyncio.create_task(self._start_schedulers())
+
+        if self._teleport_loop_task is None:
+            self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
+            log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
 
         if self._bsky and self._clip_task is None:
             self._clip_task = asyncio.create_task(self._delayed_clip_post())
@@ -370,6 +378,26 @@ class NMSBot(commands.Bot):
                 log(f"Scheduler: '{handler_name}' failed: {e}")
 
     
+    async def _teleport_loop(self):
+        """Every _teleport_interval_s (from startup) automatically teleport to a new planet."""
+        while True:
+            sleep_s = max(0.0, self._next_teleport_time - time.time())
+            log(f"Teleport loop: sleeping {sleep_s:.0f}s until next auto-teleport.")
+            await asyncio.sleep(sleep_s)
+
+            channel = self.get_channel(Config.TWITCH_CHANNEL)
+            log("Teleport loop: firing scheduled teleport.")
+            try:
+                if channel:
+                    await self._say(channel, "Warping to a new planet...")
+                await self._cmd_queue.put(("teleport", []))
+            except Exception as e:
+                log(f"Teleport loop: failed to queue teleport: {e}")
+
+            # Advance the clock by exactly one interval (stays in phase with startup)
+            self._next_teleport_time += self._teleport_interval_s
+
+
     async def _delayed_clip_post(self):
         delay_s = Config.CLIP_POST_DELAY_MINUTES * 60
         log(f"Clip scheduler: posting in {Config.CLIP_POST_DELAY_MINUTES} minutes.")
@@ -464,17 +492,26 @@ class NMSBot(commands.Bot):
     
     async def _do_status(self, ctx):
         try:
-            status = get_status_text()
-            status_text = f'{status.get("main", "")} {status.get("details", "")}'.strip()
+            status = get_status_text(countdown=self._format_countdown())
+            main = status.get("main", "").strip()
+            details = status.get("details", "").strip()
+            status_text = " • ".join(filter(None, [main, details]))
             await self._say(ctx, status_text)
-            await self._update_stream_info(title=status.get("main", "").strip())
+            await self._update_stream_info(title=main)
         except Exception as e:
             log(f"!status failed: {e}")
             await self._say(ctx, "Could not read game state.")
             return
 
         if self._bsky:
-            nms_bluesky.ensure_live(self._bsky, status.get("main", "").strip())
+            nms_bluesky.ensure_live(self._bsky, main)
+
+    def _format_countdown(self) -> str:
+        """Return a human-readable countdown to the next auto-teleport, e.g. '3h24m'."""
+        remaining = max(0.0, self._next_teleport_time - time.time())
+        h = int(remaining // 3600)
+        m = int((remaining % 3600) // 60)
+        return f"{h}h{m:02d}m"
 
     async def _update_stream_info(self, title: str = ""):
         """Update the Twitch stream title and tags via the Helix API."""
