@@ -2,3 +2,7 @@
 nms_state.json
 utilities/
 venv/
+oauth_tokens.json
+parameters.json
+misc/
+MODS/
