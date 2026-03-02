@@ -11,7 +11,7 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 35
+WAIT_FOR_MODE_SELECT = 90
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
@@ -19,7 +19,7 @@ MENU_CLICKS = [
     (0.50, 0.35, 2.0),  # Save slot 1 select
 ]
 
-WAIT_FOR_GAME_LOAD = 55
+WAIT_FOR_GAME_LOAD = 90
 
 # Disable HUD sequence
 DISABLE_HUD_CLICKS = [
@@ -37,7 +37,7 @@ DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
 TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
-OBS_EXE = r"C:\OBS\bin\64bit\obs64.exe"
+OBS_EXE = r"C:\Program Files\obs-studio\bin\64bit\obs64.exe"
 
 VIRTUAL_AUDIO_DEVICE = "VB-Audio Virtual Cable"
 SOUNDVOLUMEVIEW_PATH = r"E:\NMS Modding\no_mans_walk\utilities\SoundVolumeView\SoundVolumeView.exe"

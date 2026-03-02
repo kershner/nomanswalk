@@ -6,3 +6,5 @@ oauth_tokens.json
 parameters.json
 misc/
 MODS/
+*.log
+.nmspy_mods.py.cache/

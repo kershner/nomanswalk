@@ -21,7 +21,7 @@ STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
 
-PLANET_LOAD_SECONDS = 45  # how long to wait for a new planet to load after teleport
+PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
 
 _last_walk_t = 0.0
 _last_stop_t = 0.0
