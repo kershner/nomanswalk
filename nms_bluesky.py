@@ -204,11 +204,11 @@ def _download_clip(clip_id, headers, broadcaster_id):
 
 
 # ─────────────────────────────────────────────────────────────
-# Post a clip (fully autonomous)
+# Post a clip to Bluesky
 # ─────────────────────────────────────────────────────────────
-def post_clip(bsky_client: Client, params_file="parameters.json"):
+def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = ""):
     params = _load_params(params_file)
-    status = get_status_text()
+    status = get_status_text(countdown=countdown)
     status_text = status.get("main", "").strip()
 
     broadcaster_id = params["NMS_TWITCH_BROADCASTER_ID"]

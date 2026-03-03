@@ -1,16 +1,27 @@
 from nms_bot import COMMANDS, start_state_poller, left_click, is_planet_loading
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from twitchio.ext import commands
 from typing import Optional
 import nms_bluesky
+import subprocess
 import aiohttp
 import requests
 import asyncio
 import json
 import time
+import pytz
 import os
+
+
+# ─────────────────────────────────────────────────────────────
+# NIGHTLY SHUTDOWN CONFIG
+# ─────────────────────────────────────────────────────────────
+SHUTDOWN_HOUR = 0        # 0 = midnight; change to e.g. 2 for 2 AM EST
+SHUTDOWN_MINUTE = 0
+SHUTDOWN_TZ = "US/Eastern"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -82,6 +93,7 @@ class Config:
         users = [str(u).lower() for u in users if u]
         defaults = {cls.TWITCH_CHANNEL}
         return sorted(set(users) | defaults)
+
 
 # ─────────────────────────────────────────────────────────────
 # OAUTH TOKENS
@@ -194,6 +206,8 @@ class NMSBot(commands.Bot):
         self._next_teleport_time: float = time.time() + self._teleport_interval_s
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
+        self._shutdown_loop_task: Optional[asyncio.Task] = None
+
         super().__init__(
             token=self._access_token,
             prefix="!",
@@ -205,9 +219,8 @@ class NMSBot(commands.Bot):
             log("Bluesky logged in.")
         except Exception as e:
             log(f"Bluesky login failed: {e}")
-    
+
     def _parse_command(self, content: str) -> tuple[str, list[str]]:
-        # content like: "!walk" or "!forward 3"
         if not content:
             return "", []
         text = content.strip()
@@ -216,13 +229,11 @@ class NMSBot(commands.Bot):
         text = text[1:].strip()
         if not text:
             return "", []
-
         parts = text.split()
         name = parts[0].lower()
         args = parts[1:]
         return name, args
-    
-    
+
     async def event_ready(self):
         log(f"Connected to Twitch as {self.nick}")
         start_state_poller()
@@ -237,6 +248,10 @@ class NMSBot(commands.Bot):
         if self._teleport_loop_task is None:
             self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
             log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
+
+        if self._shutdown_loop_task is None:
+            self._shutdown_loop_task = asyncio.create_task(self._nightly_shutdown_loop())
+            log("Nightly shutdown loop started.")
 
         if self._bsky and self._clip_task is None:
             self._clip_task = asyncio.create_task(self._delayed_clip_post())
@@ -303,8 +318,6 @@ class NMSBot(commands.Bot):
                 self._executing = False
                 self._cmd_queue.task_done()
 
-            # After teleport, drain anything that snuck into the queue during
-            # the tiny window before the loading flag was raised.
             if name == "teleport":
                 drained = 0
                 while not self._cmd_queue.empty():
@@ -330,7 +343,6 @@ class NMSBot(commands.Bot):
                 new_access = str(tokens.get("access_token") or "").strip()
                 if new_access and new_access != self._access_token:
                     self._access_token = new_access
-                    # Best-effort: update token for internal clients if present.
                     try:
                         if hasattr(self, "_connection") and hasattr(self._connection, "_token"):
                             self._connection._token = self._access_token
@@ -344,7 +356,6 @@ class NMSBot(commands.Bot):
             except Exception:
                 log("Token refresh loop failed")
 
-            # Sleep until near expiry (or a short backoff if expires_at missing).
             try:
                 tokens = self._tokens.load()
                 expires_at = int(tokens.get("expires_at") or 0)
@@ -364,7 +375,6 @@ class NMSBot(commands.Bot):
             asyncio.create_task(self._scheduler_loop(channel, interval_s, handler_name))
 
     async def _scheduler_loop(self, channel, interval_s: int, handler_name: str):
-        """Wait `interval_s` seconds, then call `self.<handler_name>(channel)`, repeat."""
         handler = getattr(self, handler_name, None)
         if handler is None:
             log(f"Scheduler: unknown handler '{handler_name}', skipping.")
@@ -377,7 +387,6 @@ class NMSBot(commands.Bot):
             except Exception as e:
                 log(f"Scheduler: '{handler_name}' failed: {e}")
 
-    
     async def _teleport_loop(self):
         """Every _teleport_interval_s (from startup) automatically teleport to a new planet."""
         while True:
@@ -394,9 +403,57 @@ class NMSBot(commands.Bot):
             except Exception as e:
                 log(f"Teleport loop: failed to queue teleport: {e}")
 
-            # Advance the clock by exactly one interval (stays in phase with startup)
             self._next_teleport_time += self._teleport_interval_s
 
+    async def _nightly_shutdown_loop(self):
+        """
+        Runs every 60 seconds. Shuts down at the configured time each night by
+        comparing minutes until the *next* occurrence of that time.
+        """
+        log(
+            f"Nightly shutdown loop: targeting {SHUTDOWN_HOUR:02d}:{SHUTDOWN_MINUTE:02d} "
+            f"{SHUTDOWN_TZ} each night."
+        )
+        last_warning_date = None
+        last_shutdown_date = None
+
+        while True:
+            try:
+                tz = pytz.timezone(SHUTDOWN_TZ)
+                now = datetime.now(tz)
+
+                shutdown_next = (now + timedelta(days=1)).replace(
+                    hour=SHUTDOWN_HOUR,
+                    minute=SHUTDOWN_MINUTE,
+                    second=0,
+                    microsecond=0,
+                )
+                minutes_until = int((shutdown_next - now).total_seconds() // 60)
+
+                channel = self.get_channel(Config.TWITCH_CHANNEL)
+
+                # ── 10-minute warning ──────────────────────────────────────
+                if 0 < minutes_until <= 10 and last_warning_date != now.date():
+                    last_warning_date = now.date()
+                    log("Nightly shutdown: sending 10-minute warning to chat.")
+                    if channel:
+                        await self._say(
+                            channel,
+                            f"🌙 No Man's Walk will be shutting down in "
+                            f"{minutes_until} minute(s). "
+                            "The Walker will be back in the morning — see you then!"
+                        )
+
+                # ── Shutdown ───────────────────────────────────────────────
+                elif minutes_until > 1430 and last_shutdown_date != now.date():
+                    last_shutdown_date = now.date()
+                    log("Nightly shutdown: shutting down now.")
+                    subprocess.run(["shutdown", "/s", "/t", "30"], check=False)
+
+            except Exception as e:
+                log(f"Nightly shutdown loop error: {e}")
+
+            await asyncio.sleep(60)
 
     async def _delayed_clip_post(self):
         delay_s = Config.CLIP_POST_DELAY_MINUTES * 60
@@ -408,12 +465,11 @@ class NMSBot(commands.Bot):
             return
 
         try:
-            await asyncio.to_thread(nms_bluesky.post_clip, self._bsky)
+            await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, countdown=self._format_countdown())
             log("Clip scheduler: post_clip() complete.")
         except Exception as e:
             log(f"Clip scheduler failed: {e}")
-    
-    
+
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
         if self._vote.active:
             await self._say(ctx, "Vote already in progress.")
@@ -456,7 +512,6 @@ class NMSBot(commands.Bot):
     async def _cast_vote(self, ctx, message, side: str):
         if not self._vote.active:
             return
-        # Read username directly from message tags — more reliable than ctx.author
         user = ""
         try:
             user = (message.author.name or "").lower()
@@ -489,7 +544,7 @@ class NMSBot(commands.Bot):
     @commands.command(name="status")
     async def cmd_status(self, ctx: commands.Context):
         await self._do_status(ctx)
-    
+
     async def _do_status(self, ctx):
         try:
             status = get_status_text(countdown=self._format_countdown())
@@ -526,7 +581,6 @@ class NMSBot(commands.Bot):
                     "Content-Type": "application/json",
                 }
 
-                # Get broadcaster ID
                 async with session.get(
                     f"https://api.twitch.tv/helix/users?login={Config.TWITCH_CHANNEL}",
                     headers=headers,
@@ -537,7 +591,6 @@ class NMSBot(commands.Bot):
                     data = await resp.json()
                     broadcaster_id = data["data"][0]["id"]
 
-                # Patch title and tags in one request
                 async with session.patch(
                     f"https://api.twitch.tv/helix/channels?broadcaster_id={broadcaster_id}",
                     headers=headers,
@@ -569,7 +622,6 @@ class NMSBot(commands.Bot):
             else:
                 await self._say(ctx, f"Unknown command: !{name}")
             return
-        # Only show canonical names, not aliases or hidden commands, in the command list
         all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
         primary_names = [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
         cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
@@ -601,7 +653,6 @@ class NMSBot(commands.Bot):
         await self._enqueue_command(ctx, name, args)
 
     async def event_command_error(self, ctx: commands.Context, error: Exception):
-        # We dispatch most !commands ourselves; ignore TwitchIO's CommandNotFound noise.
         if isinstance(error, CommandNotFound):
             return
         log(f"Command error: {error}")
@@ -610,8 +661,8 @@ class NMSBot(commands.Bot):
         log(f"Event error: {error}")
 
     async def event_raw_data(self, data: str):
-        # keep quiet
         return
+
 
 def main():
     bot = NMSBot()

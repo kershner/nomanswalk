@@ -70,7 +70,7 @@ def start_obs():
             shell=False,
         )
 
-        time.sleep(5)
+        time.sleep(10)
         log("OBS stream should be live.")
 
     except Exception as e:

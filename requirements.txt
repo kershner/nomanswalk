@@ -54,6 +54,7 @@ PyRect==0.2.0
 pyrun_injected==0.2.0
 PyScreeze==1.0.1
 pytweening==1.2.0
+pytz==2025.2
 pywin32==311
 pywinauto==0.6.9
 PyWinBox==0.7
