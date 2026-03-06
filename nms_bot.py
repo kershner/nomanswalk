@@ -20,6 +20,7 @@ SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
+STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
 
@@ -29,6 +30,7 @@ _last_xy = None
 _last_move_t = 0.0
 _stuck = False
 _stuck_last_cmd = None
+_last_unstuck_t = 0.0
 
 # Planet-load lockout — set during teleport to pause stuck-checking and
 # block new commands in the Twitch bot.
@@ -165,9 +167,14 @@ def check_if_stuck(state, data, timestamp):
 
 
 def _do_unstuck(timestamp):
-    global _stuck_last_cmd, _last_move_t
+    global _stuck_last_cmd, _last_move_t, _last_unstuck_t
 
-    _last_move_t = time.time()
+    now = time.time()
+    if now - _last_unstuck_t < STUCK_COOLDOWN:
+        return  # too soon after last attempt, wait it out
+
+    _last_unstuck_t = now
+    _last_move_t = now
 
     if _stuck_last_cmd == "jet":
         log(f"STUCK: still stuck after jet, trying right 30")

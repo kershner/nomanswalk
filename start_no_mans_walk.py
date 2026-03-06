@@ -4,6 +4,7 @@ import subprocess
 import pyautogui
 import argparse
 import time
+import glob
 import sys
 import os
 
@@ -11,7 +12,7 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 90
+WAIT_FOR_MODE_SELECT = 120
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
@@ -37,10 +38,15 @@ DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
 TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
-OBS_EXE = r"C:\Program Files\obs-studio\bin\64bit\obs64.exe"
+OBS_DIR = r"C:\Program Files\obs-studio"
+OBS_EXE = os.path.join(OBS_DIR, "bin", "64bit", "obs64.exe")
+OBS_LOG_DIR = os.path.join(os.path.expandvars("%APPDATA%"), "obs-studio", "logs")
+OBS_INIT_WAIT = 18
+OBS_RETRY_WAIT = 10
+OBS_MAX_RETRIES = 5
 
 VIRTUAL_AUDIO_DEVICE = "VB-Audio Virtual Cable"
-SOUNDVOLUMEVIEW_PATH = r"E:\NMS Modding\no_mans_walk\utilities\SoundVolumeView\SoundVolumeView.exe"
+SOUNDVOLUMEVIEW_PATH = r"C:\NoMansWalk\utilities\SoundVolumeView\SoundVolumeView.exe"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -54,27 +60,53 @@ def is_process_running(process_name):
     return False
 
 
+def _obs_log_since(since):
+    logs = glob.glob(os.path.join(OBS_LOG_DIR, "*.txt"))
+    recent = [p for p in logs if os.path.getmtime(p) >= since]
+    pool = recent or logs
+    return max(pool, key=os.path.getmtime) if pool else None
+
+
+def _obs_log_has(log_path, *fragments):
+    try:
+        content = open(log_path, encoding="utf-8", errors="ignore").read().lower()
+        return any(f.lower() in content for f in fragments)
+    except OSError:
+        return False
+
+
 def start_obs():
     """Launch OBS with --startstreaming and wait for the stream to be live."""
     if is_process_running("obs64.exe"):
         log("OBS is already running.")
         return
 
-    log("Starting OBS Studio and streaming...")
-    try:
-        subprocess.Popen(
-            [OBS_EXE, "--startstreaming", "--multi", "--minimize-to-tray"],
-            cwd=os.path.dirname(OBS_EXE),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            shell=False,
-        )
+    obs_args = [OBS_EXE, "--startstreaming", "--multi", "--minimize-to-tray",
+                "--disable-missing-files-check", "--disable-updater"]
 
-        time.sleep(10)
-        log("OBS stream should be live.")
+    for attempt in range(1, OBS_MAX_RETRIES + 1):
+        log(f"Starting OBS (attempt {attempt}/{OBS_MAX_RETRIES})...")
+        launch_time = time.time()
+        subprocess.Popen(obs_args, cwd=os.path.dirname(OBS_EXE),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    except Exception as e:
-        log(f"Failed to start OBS: {e}")
+        time.sleep(OBS_INIT_WAIT)
+        obs_log = _obs_log_since(launch_time)
+
+        if obs_log and _obs_log_has(obs_log, "nvenc not supported",
+                                    "encoder type 'obs_nvenc_h264_tex' not available",
+                                    "failed to initialize module 'obs-nvenc.dll'"):
+            log(f"NVENC failure detected (attempt {attempt}), retrying in {OBS_RETRY_WAIT}s...")
+            subprocess.run(["taskkill", "/F", "/IM", "obs64.exe"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(OBS_RETRY_WAIT)
+            continue
+
+        log("OBS stream live." if (obs_log and _obs_log_has(obs_log, "streaming start"))
+            else "OBS running, no NVENC error detected.")
+        return
+
+    log(f"ERROR: OBS failed to start with NVENC after {OBS_MAX_RETRIES} attempts.")
 
 
 def set_nms_audio_device():
@@ -140,6 +172,12 @@ def main():
     args = parse_args()
     control_mode = args.mode
 
+    if control_mode == "twitch":
+        log("Starting OBS before NMS so Game Capture hook attaches cleanly...")
+        set_nms_audio_device()
+        start_obs()
+        time.sleep(30)  # let OBS fully settle before NMS creates its DX context
+
     nms_proc = subprocess.Popen(
         [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy_mods.py"],
         cwd=BASE_DIR,
@@ -164,10 +202,6 @@ def main():
     teleport_to_new_planet()
 
     if control_mode == "twitch":
-        log("Starting OBS...")
-        set_nms_audio_device()
-        start_obs()
-        
         log("Starting Twitch bot...")
         proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
         log(f"Twitch bot started (PID {proc.pid})")
@@ -176,7 +210,7 @@ def main():
         log("Starting dev server...")
         proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
         log(f"Dev server started (PID {proc.pid})")
-    
+
     log("Startup sequence complete.")
 
 
