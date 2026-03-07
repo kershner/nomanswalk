@@ -48,11 +48,12 @@ class Config:
         "Automation",
         "Chill",
         "Cozy",
+        "Comfy",
         "Interactive",
         "PC",
         "Programming",
         "Casual",
-        "Relaxing"
+        "Python"
     ]
 
     ADMIN_ONLY_COMMANDS = {

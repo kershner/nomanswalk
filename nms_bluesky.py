@@ -27,10 +27,10 @@ log = logging.getLogger(__name__)
 TWITCH_CLIP_URL = "https://api.twitch.tv/helix/clips"
 
 TAGS_POOL = [
-    "NMS", "Exploration", "Automation", "Chill", "Cozy",
-    "Twitch", "Interactive", "Gaming", "ProcGen",
-    "Survival", "Relaxing", "Casual", "Python", "Programming",
-    "Streaming"
+    "nms", "exploration", "automation", "chill", "cozy",
+    "twitch", "interactive", "gaming", "procgen",
+    "survival", "relaxing", "casual", "python", "programming",
+    "streaming"
 ]
 
 def _pick_tags():
