@@ -335,18 +335,17 @@ def coords(args=None):
         walk()  # right_mouse_click() stops autowalk in-game, so re-engage it
 
 
-# TODO - fix this one
 def music(args=None):
-    """Toggle music on or off. Usage: music on / music off"""
-    mode = (args[0].lower() if args else "on")
+    """Turn music up or down. Usage: music up / music down"""
+    mode = (args[0].lower() if args else "up")
 
     ARROW_POS = {
-        "on":  (0.80, 0.50),
-        "off": (0.51, 0.50),
+        "up":  (0.80, 0.50),
+        "down": (0.51, 0.50),
     }
 
     if mode not in ARROW_POS:
-        log(f"music: unknown mode '{mode}', use 'on' or 'off'")
+        log(f"music: unknown mode '{mode}', use 'up' or 'down'")
         return
 
     NAV_CLICKS = [
@@ -412,10 +411,10 @@ class Command:
 
 
 COMMANDS: dict[str, Command] = {
-    "jet":     Command(jet,     "Jetpack burst.",                         aliases=("j",)),
-    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain.", aliases=("d",)),
-    "walk":    Command(walk,    "Toggle autowalk on/off."),
-    "stop":    Command(stop,    "Stop autowalking."),
+    "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
+    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain.",aliases=("d",)),
+    "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
+    "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
     "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
     "up":      Command(up,      "Look up N steps. e.g. !up 5",           aliases=("u",)),
@@ -423,10 +422,10 @@ COMMANDS: dict[str, Command] = {
     "left":    Command(left,    "Turn left N steps. e.g. !left 5",       aliases=("l",)),
     "right":   Command(right,   "Turn right N steps. e.g. !right 5",     aliases=("r",)),
     "camera":  Command(camera,  "Toggle third person camera."),
-    "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs."),
-    "coords":  Command(coords,   "Show planet coordinates for 10 seconds."),
-    "teleport": Command(teleport, "Teleport to a random planet.", hidden=True),
-    # "music":   Command(music,   "Toggles music on/off."),
+    "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs.", hidden=True),
+    "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
+    "teleport": Command(teleport,"Teleport to a random planet.", hidden=True),
+    "music":   Command(music,   "Turns music up/down. e.g. !music up"),
 }
 
 # Expand aliases into COMMANDS so lookups work transparently.

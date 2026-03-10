@@ -17,14 +17,6 @@ import os
 
 
 # ─────────────────────────────────────────────────────────────
-# NIGHTLY SHUTDOWN CONFIG
-# ─────────────────────────────────────────────────────────────
-SHUTDOWN_HOUR = 0        # 0 = midnight; change to e.g. 2 for 2 AM EST
-SHUTDOWN_MINUTE = 0
-SHUTDOWN_TZ = "US/Eastern"
-
-
-# ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
 class Config:
@@ -42,6 +34,10 @@ class Config:
         (20 * 60, "_do_help"),    # !help  every 20 minutes
         (30 * 60, "_do_status"),  # !status every 30 minutes
     ]
+
+    SHUTDOWN_HOUR = 0             # 0 = midnight; change to e.g. 2 for 2 AM EST
+    SHUTDOWN_MINUTE = 0
+    SHUTDOWN_TZ = "US/Eastern"
     
     STREAM_TAGS = [
         "Exploration",
@@ -64,6 +60,16 @@ class Config:
         "camera",
         "coords"
     }
+
+    PARAM_GUARD_CMDS = [
+        "up", 
+        "down", 
+        "left", 
+        "right", 
+        "forward", 
+        "back", 
+        "music"
+    ]
 
     CLIP_POST_DELAY_MINUTES = 120
 
@@ -273,7 +279,7 @@ class NMSBot(commands.Bot):
     async def event_message(self, message):
         if message.echo:
             return
-
+        
         content = (message.content or "").strip()
         if content.startswith("!"):
             name, args = self._parse_command(content)
@@ -287,7 +293,10 @@ class NMSBot(commands.Bot):
             elif name == "status":
                 await self._do_status(ctx)
             elif name:
-                await self._dispatch_nms_command(ctx, name, args)
+                if name in Config.PARAM_GUARD_CMDS:
+                    await self._param_guard_cmd(ctx, name, args)
+                else:
+                    await self._dispatch_nms_command(ctx, name, args)
             return
 
         await self.handle_commands(message)
@@ -331,6 +340,16 @@ class NMSBot(commands.Bot):
                 if drained:
                     log(f"Teleport: drained {drained} stale command(s) from queue.")
 
+    async def _param_guard_cmd(self, ctx: commands.Context, name: str, args: list[str]):
+        if not args:
+            cmd = COMMANDS.get(name)
+            help_text = f"{cmd.help}" if cmd and cmd.help else ""
+            await self._say(ctx, help_text)
+            return
+        
+        await self._dispatch_nms_command(ctx, name, args)
+    
+    
     async def _enqueue_command(self, ctx: commands.Context, name: str, args: list[str]):
         was_busy = self._executing or (self._cmd_queue.qsize() > 0)
         await self._cmd_queue.put((name, args))
@@ -412,20 +431,20 @@ class NMSBot(commands.Bot):
         comparing minutes until the *next* occurrence of that time.
         """
         log(
-            f"Nightly shutdown loop: targeting {SHUTDOWN_HOUR:02d}:{SHUTDOWN_MINUTE:02d} "
-            f"{SHUTDOWN_TZ} each night."
+            f"Nightly shutdown loop: targeting {Config.SHUTDOWN_HOUR:02d}:{Config.SHUTDOWN_MINUTE:02d} "
+            f"{Config.SHUTDOWN_TZ} each night."
         )
         last_warning_date = None
         last_shutdown_date = None
 
         while True:
             try:
-                tz = pytz.timezone(SHUTDOWN_TZ)
+                tz = pytz.timezone(Config.SHUTDOWN_TZ)
                 now = datetime.now(tz)
 
                 shutdown_next = (now + timedelta(days=1)).replace(
-                    hour=SHUTDOWN_HOUR,
-                    minute=SHUTDOWN_MINUTE,
+                    hour=Config.SHUTDOWN_HOUR,
+                    minute=Config.SHUTDOWN_MINUTE,
                     second=0,
                     microsecond=0,
                 )
@@ -574,6 +593,7 @@ class NMSBot(commands.Bot):
         try:
             client_id = Config.get_client_id()
             oauth_token = self._access_token
+            helix_api_url = "https://api.twitch.tv/helix/"
 
             async with aiohttp.ClientSession() as session:
                 headers = {
@@ -583,7 +603,7 @@ class NMSBot(commands.Bot):
                 }
 
                 async with session.get(
-                    f"https://api.twitch.tv/helix/users?login={Config.TWITCH_CHANNEL}",
+                    f"{helix_api_url}users?login={Config.TWITCH_CHANNEL}",
                     headers=headers,
                 ) as resp:
                     if resp.status != 200:
@@ -593,7 +613,7 @@ class NMSBot(commands.Bot):
                     broadcaster_id = data["data"][0]["id"]
 
                 async with session.patch(
-                    f"https://api.twitch.tv/helix/channels?broadcaster_id={broadcaster_id}",
+                    f"{helix_api_url}channels?broadcaster_id={broadcaster_id}",
                     headers=headers,
                     json={
                         "title": title,
@@ -626,8 +646,10 @@ class NMSBot(commands.Bot):
         all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
         primary_names = [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
         cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
-        cmds_text = f"{cmds_text} • Type !help <cmd> for details."
-        await self._say(ctx, cmds_text)
+        cmds_text = f"{cmds_text} • Type !help <cmd> for more details."
+        preamble = "This is an automated stream."
+        help_text = f"{preamble} {cmds_text}"
+        await self._say(ctx, help_text)
 
     @commands.command(name="walk")
     async def cmd_walk(self, ctx: commands.Context):
