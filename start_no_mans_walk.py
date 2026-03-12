@@ -13,22 +13,22 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 60
+WAIT_FOR_MODE_SELECT = 90
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
-    (0.35, 0.45, 2.0),  # "Play Game" button
-    (0.50, 0.36, 2.0),  # Save slot 1 select
+    (0.35, 0.45, 3.0),  # "Play Game" button
+    (0.50, 0.36, 3.0),  # Save slot 1 select
 ]
 
 WAIT_FOR_GAME_LOAD = 90
 
 # Disable HUD sequence
 DISABLE_HUD_CLICKS = [
-    (0.73, 0.05, 1.5),  # OPTIONS tab
-    (0.10, 0.80, 1.5),  # General
-    (0.60, 0.90, 1.5),  # HUD toggle
-    (0.40, 0.60, 1.5),  # Apply
+    (0.73, 0.05, 3.0),  # OPTIONS tab
+    (0.10, 0.80, 5.0),  # General
+    (0.60, 0.90, 3.0),  # HUD toggle
+    (0.40, 0.60, 3.0),  # Apply
 ]
 DISABLE_HUD_MENU_OPEN_DELAY = 2.0
 DISABLE_HUD_ESC_DELAY = 0.8

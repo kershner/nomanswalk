@@ -54,6 +54,7 @@ class Config:
 
     ADMIN_ONLY_COMMANDS = {
         "teleport",
+        "next_planet"
     }
 
     VOTABLE_COMMANDS = {
