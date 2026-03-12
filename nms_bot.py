@@ -13,7 +13,7 @@ import os
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nms_mods", "nms_state.json")
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nmspy_mods", "nms_state.json")
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 

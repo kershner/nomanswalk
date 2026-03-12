@@ -13,7 +13,7 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 90
+WAIT_FOR_MODE_SELECT = 60
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
