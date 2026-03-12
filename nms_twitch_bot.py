@@ -58,7 +58,8 @@ class Config:
 
     VOTABLE_COMMANDS = {
         "camera",
-        "coords"
+        "coords",
+        "music"
     }
 
     PARAM_GUARD_CMDS = [
@@ -68,7 +69,6 @@ class Config:
         "right", 
         "forward", 
         "back", 
-        "music"
     ]
 
     CLIP_POST_DELAY_MINUTES = 120

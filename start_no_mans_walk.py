@@ -17,7 +17,7 @@ WAIT_FOR_MODE_SELECT = 120
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
     (0.35, 0.45, 2.0),  # "Play Game" button
-    (0.50, 0.35, 2.0),  # Save slot 1 select
+    (0.50, 0.36, 2.0),  # Save slot 1 select
 ]
 
 WAIT_FOR_GAME_LOAD = 90
@@ -178,11 +178,11 @@ def main():
         start_obs()
         time.sleep(30)  # let OBS fully settle before NMS creates its DX context
 
-    nms_proc = subprocess.Popen(
-        [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy_mods.py"],
+    nmspy_proc = subprocess.Popen(
+        [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy"],
         cwd=BASE_DIR,
     )
-    log(f"NMS process started (PID {nms_proc.pid})")
+    log(f"NMS process started (PID {nmspy_proc.pid})")
 
     log(f"Waiting {WAIT_FOR_MODE_SELECT}s...")
     time.sleep(WAIT_FOR_MODE_SELECT)
@@ -196,10 +196,13 @@ def main():
     time.sleep(WAIT_FOR_GAME_LOAD)
 
     log("Disabling HUD via menu clicks...")
-    disable_hud_clicks()
+    disable_hud_clicks()    
 
     log("Teleporting to starting planet...")
     teleport_to_new_planet()
+
+    log("Toggling music with the 'm' key...")
+    send_key("m", 0.1)
 
     if control_mode == "twitch":
         log("Starting Twitch bot...")

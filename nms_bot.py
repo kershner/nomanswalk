@@ -336,56 +336,16 @@ def coords(args=None):
 
 
 def music(args=None):
-    """Turn music up or down. Usage: music up / music down"""
-    mode = (args[0].lower() if args else "up")
+    """Toggle the music by sending the "m" key.  Handled by the music_toggle mod"""
+    send_key("m", 0.1)
 
-    ARROW_POS = {
-        "up":  (0.80, 0.50),
-        "down": (0.51, 0.50),
-    }
-
-    if mode not in ARROW_POS:
-        log(f"music: unknown mode '{mode}', use 'up' or 'down'")
-        return
-
-    NAV_CLICKS = [
-        (0.73, 0.05, 1.5),  # OPTIONS tab
-        (0.10, 0.80, 1.5),  # General
-    ]
-
-    focus_nms()
-    send_key("esc", 0.1)
-
-    log(f"Toggle music: navigating to options ({mode})...")
-    for px, py, delay in NAV_CLICKS:
-        click_at_percent(px, py, delay_after=delay)
-        time.sleep(0.1)
-
-    # Click arrow 50x
-    ax, ay = ARROW_POS[mode]
-    click_at_percent(ax, ay)
-    for _ in range(120):
-        click_at_percent(ax, ay, delay_after=0.01, move_cursor=False)
-    
-    send_key("esc", 0.1)
-    time.sleep(1.0)
-
-    # Apply btn
-    apply_btn_pos = (0.20, 0.7)
-    if mode == "off":
-        apply_btn_pos = (0.50, 0.7)
-    click_at_percent(apply_btn_pos[0], apply_btn_pos[1], delay_after=1.5)
-    
-    time.sleep(1.0)
-    send_key("esc", 0.1)
-
-def teleport(args=None):
-    """Send the 'O' key to trigger a random planet teleport, then wait for the planet to load."""
+def _do_teleport(key, label):
+    """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
     set_planet_loading(True)
     try:
-        send_key("o", 0.1)
-        log(f"Teleport: waiting {PLANET_LOAD_SECONDS}s for planet to load...")
+        send_key(key, 0.1)
+        log(f"{label}: waiting {PLANET_LOAD_SECONDS}s for planet to load...")
         time.sleep(PLANET_LOAD_SECONDS)
 
         # Reset stuck-checker state so stale position data doesn't fire immediately
@@ -393,10 +353,20 @@ def teleport(args=None):
         _last_move_t = time.time()
         _stuck = False
         _stuck_last_cmd = None
-        log("Teleport: planet load wait complete.")
+        log(f"{label}: planet load wait complete.")
         walk()
     finally:
         set_planet_loading(False)
+
+
+def teleport(args=None):
+    """Send the 'O' key to trigger a random planet teleport, then wait for the planet to load."""
+    _do_teleport("o", "Teleport")
+
+
+def next_planet(args=None):
+    """Send the '[' key to teleport to a nearby planet, then wait for the planet to load."""
+    _do_teleport("[", "NextPlanet")
 
 
 # ---------------------------------------------------------------------------
@@ -424,8 +394,9 @@ COMMANDS: dict[str, Command] = {
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs.", hidden=True),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
-    "teleport": Command(teleport,"Teleport to a random planet.", hidden=True),
-    "music":   Command(music,   "Turns music up/down. e.g. !music up"),
+    "teleport": Command(teleport,    "Teleport to a random planet.", hidden=True),
+    "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
+    "music": Command(music,   "Toggles music on/off."),
 }
 
 # Expand aliases into COMMANDS so lookups work transparently.

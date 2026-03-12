@@ -30,6 +30,23 @@ def log(msg):
     logging.info(f"{msg}")
 
 
+def _ensure_foreground(hwnd, retries=5) -> bool:
+    """Try to bring hwnd to foreground, return True if it succeeded."""
+    for _ in range(retries):
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+        current_thread = win32api.GetCurrentThreadId()
+        target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+        ctypes.windll.user32.AttachThreadInput(current_thread, target_thread, True)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        ctypes.windll.user32.AttachThreadInput(current_thread, target_thread, False)
+        time.sleep(0.1)
+    return win32gui.GetForegroundWindow() == hwnd
+
+
 def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
     hwnd, _dlg = focus_nms()
     if not hwnd:
@@ -49,6 +66,9 @@ def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
     if move_cursor:
         win32api.SetCursorPos((sx, sy))
         time.sleep(0.05)
+
+    if not _ensure_foreground(hwnd):
+        log(f"WARNING: could not bring NMS to foreground before click ({px:.2f}, {py:.2f})")
 
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.02)
