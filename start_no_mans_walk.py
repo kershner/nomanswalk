@@ -1,5 +1,6 @@
 from utils import BASE_DIR, focus_nms, log, send_key, click_at_percent
 from nms_bot import PLANET_LOAD_SECONDS
+import obsws_python as obs
 import subprocess
 import pyautogui
 import argparse
@@ -12,7 +13,7 @@ import os
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
-WAIT_FOR_MODE_SELECT = 120
+WAIT_FOR_MODE_SELECT = 90
 
 MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
@@ -41,7 +42,7 @@ DEV_SERVER_URL = "http://127.0.0.1:5050"
 OBS_DIR = r"C:\Program Files\obs-studio"
 OBS_EXE = os.path.join(OBS_DIR, "bin", "64bit", "obs64.exe")
 OBS_LOG_DIR = os.path.join(os.path.expandvars("%APPDATA%"), "obs-studio", "logs")
-OBS_INIT_WAIT = 18
+OBS_INIT_WAIT = 10
 OBS_RETRY_WAIT = 10
 OBS_MAX_RETRIES = 5
 
@@ -76,12 +77,12 @@ def _obs_log_has(log_path, *fragments):
 
 
 def start_obs():
-    """Launch OBS with --startstreaming and wait for the stream to be live."""
+    """Launch OBS and wait for the stream to be live."""
     if is_process_running("obs64.exe"):
         log("OBS is already running.")
         return
 
-    obs_args = [OBS_EXE, "--startstreaming", "--multi", "--minimize-to-tray",
+    obs_args = [OBS_EXE, "--multi", "--minimize-to-tray",
                 "--disable-missing-files-check", "--disable-updater"]
 
     for attempt in range(1, OBS_MAX_RETRIES + 1):
@@ -102,8 +103,9 @@ def start_obs():
             time.sleep(OBS_RETRY_WAIT)
             continue
 
-        log("OBS stream live." if (obs_log and _obs_log_has(obs_log, "streaming start"))
-            else "OBS running, no NVENC error detected.")
+        ws = obs.ReqClient(host="localhost", port=4455, password="")
+        ws.start_stream()
+        log("OBS stream live.")
         return
 
     log(f"ERROR: OBS failed to start with NVENC after {OBS_MAX_RETRIES} attempts.")
@@ -174,9 +176,9 @@ def main():
 
     if control_mode == "twitch":
         log("Starting OBS before NMS so Game Capture hook attaches cleanly...")
-        set_nms_audio_device()
+        # set_nms_audio_device()
         start_obs()
-        time.sleep(30)  # let OBS fully settle before NMS creates its DX context
+        time.sleep(10)  # let OBS fully settle before NMS creates its DX context
 
     nmspy_proc = subprocess.Popen(
         [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy"],

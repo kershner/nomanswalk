@@ -30,21 +30,31 @@ def log(msg):
     logging.info(f"{msg}")
 
 
-def _ensure_foreground(hwnd, retries=5) -> bool:
-    """Try to bring hwnd to foreground, return True if it succeeded."""
-    for _ in range(retries):
-        if win32gui.GetForegroundWindow() == hwnd:
-            return True
-        current_thread = win32api.GetCurrentThreadId()
-        target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
-        ctypes.windll.user32.AttachThreadInput(current_thread, target_thread, True)
-        try:
-            win32gui.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
-        ctypes.windll.user32.AttachThreadInput(current_thread, target_thread, False)
-        time.sleep(0.1)
-    return win32gui.GetForegroundWindow() == hwnd
+def _send_click():
+    """Use SendInput instead of mouse_event — more reliable, harder for Windows to drop."""
+    INPUT_MOUSE = 0
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.c_ulong),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_ulong), ("mi", MOUSEINPUT)]
+
+    down = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dwFlags=MOUSEEVENTF_LEFTDOWN))
+    up   = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dwFlags=MOUSEEVENTF_LEFTUP))
+
+    ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
+    time.sleep(0.02)
+    ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
 
 
 def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
@@ -67,12 +77,10 @@ def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
         win32api.SetCursorPos((sx, sy))
         time.sleep(0.05)
 
-    if not _ensure_foreground(hwnd):
-        log(f"WARNING: could not bring NMS to foreground before click ({px:.2f}, {py:.2f})")
+    win32gui.SetForegroundWindow(hwnd)
+    time.sleep(0.05)
 
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.02)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    _send_click()
 
     if move_cursor:
         log(f"Clicked ({px:.2f}, {py:.2f}) -> screen ({sx}, {sy})")
