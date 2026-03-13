@@ -461,8 +461,8 @@ class NMSBot(commands.Bot):
                         await self._say(
                             channel,
                             f"🌙 No Man's Walk will be shutting down in "
-                            f"{minutes_until} minute(s). "
-                            "The Walker will be back in the morning — see you then!"
+                            f"{minutes_until} minutes. "
+                            "The Walker will be back in the morning, see you then!"
                         )
 
                 # ── Shutdown ───────────────────────────────────────────────
@@ -572,6 +572,7 @@ class NMSBot(commands.Bot):
             main = status.get("main", "").strip()
             details = status.get("details", "").strip()
             status_text = " • ".join(filter(None, [main, details]))
+            status_text = f"🪐{status_text}"
             await self._say(ctx, status_text)
             await self._update_stream_info(title=main)
         except Exception as e:
@@ -648,7 +649,7 @@ class NMSBot(commands.Bot):
         primary_names = [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
         cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
         cmds_text = f"{cmds_text} • Type !help <cmd> for more details."
-        preamble = "This is an automated stream."
+        preamble = "🛸"
         help_text = f"{preamble} {cmds_text}"
         await self._say(ctx, help_text)
 
