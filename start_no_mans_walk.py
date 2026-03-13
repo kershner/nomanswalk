@@ -25,8 +25,8 @@ WAIT_FOR_GAME_LOAD = 90
 
 # Disable HUD sequence
 DISABLE_HUD_CLICKS = [
-    (0.73, 0.05, 3.0),  # OPTIONS tab
-    (0.10, 0.80, 5.0),  # General
+    (0.73, 0.06, 3.0),  # OPTIONS tab
+    (0.10, 0.80, 3.0),  # General
     (0.60, 0.90, 3.0),  # HUD toggle
     (0.40, 0.60, 3.0),  # Apply
 ]

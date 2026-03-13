@@ -650,7 +650,7 @@ class NMSBot(commands.Bot):
         cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
         cmds_text = f"{cmds_text} • Type !help <cmd> for more details."
         preamble = "🛸"
-        help_text = f"{preamble} {cmds_text}"
+        help_text = f"{preamble}{cmds_text}"
         await self._say(ctx, help_text)
 
     @commands.command(name="walk")
