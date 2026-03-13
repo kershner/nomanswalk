@@ -25,8 +25,8 @@ WAIT_FOR_GAME_LOAD = 90
 
 # Disable HUD sequence
 DISABLE_HUD_CLICKS = [
-    (0.73, 0.06, 3.0),  # OPTIONS tab
-    (0.10, 0.80, 3.0),  # General
+    (0.73, 0.05, 3.0),  # OPTIONS tab
+    (0.10, 0.80, 5.0),  # General
     (0.60, 0.90, 3.0),  # HUD toggle
     (0.40, 0.60, 3.0),  # Apply
 ]
@@ -48,6 +48,11 @@ OBS_MAX_RETRIES = 5
 
 VIRTUAL_AUDIO_DEVICE = "VB-Audio Virtual Cable"
 SOUNDVOLUMEVIEW_PATH = r"C:\NoMansWalk\utilities\SoundVolumeView\SoundVolumeView.exe"
+
+NMS_EXE_NAME = "NMS.exe"
+NMS_LAUNCH_TIMEOUT = 90   
+NMS_POLL_INTERVAL = 3    
+NMS_MAX_RETRIES = 3    
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,6 +131,38 @@ def set_nms_audio_device():
 # ─────────────────────────────────────────────────────────────
 # NMS helpers
 # ─────────────────────────────────────────────────────────────
+def launch_nms_with_retry():
+    """
+    Launch NMS via pymhf and block until NMS.exe appears in the process list.
+    Retries up to NMS_MAX_RETRIES times to handle Steam error 83.
+    Raises RuntimeError if the game never starts.
+    """
+    for attempt in range(1, NMS_MAX_RETRIES + 1):
+        log(f"Launching NMS (attempt {attempt}/{NMS_MAX_RETRIES})...")
+        proc = subprocess.Popen(
+            [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy"],
+            cwd=BASE_DIR,
+        )
+
+        deadline = time.time() + NMS_LAUNCH_TIMEOUT
+        while time.time() < deadline:
+            if is_process_running(NMS_EXE_NAME):
+                log(f"NMS.exe confirmed running (PID {proc.pid}).")
+                return proc
+            time.sleep(NMS_POLL_INTERVAL)
+
+        # NMS.exe never appeared — kill the launcher and try again
+        log(f"NMS.exe did not appear within {NMS_LAUNCH_TIMEOUT}s "
+            f"(possible Steam error 83). Terminating launcher and retrying...")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    raise RuntimeError(f"NMS failed to launch after {NMS_MAX_RETRIES} attempts.")
+
+
 def disable_hud_clicks():
     hwnd, _dlg = focus_nms()
     if not hwnd:
@@ -180,10 +217,7 @@ def main():
         start_obs()
         time.sleep(10)  # let OBS fully settle before NMS creates its DX context
 
-    nmspy_proc = subprocess.Popen(
-        [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy"],
-        cwd=BASE_DIR,
-    )
+    nmspy_proc = launch_nms_with_retry()
     log(f"NMS process started (PID {nmspy_proc.pid})")
 
     log(f"Waiting {WAIT_FOR_MODE_SELECT}s...")
