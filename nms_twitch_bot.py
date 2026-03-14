@@ -210,7 +210,7 @@ class NMSBot(commands.Bot):
         self._bsky = None
         self._clip_task: Optional[asyncio.Task] = None
 
-        self._teleport_interval_s = 6 * 3600  # 6 hours
+        self._teleport_interval_s = 5 * 3600  # 5 hours
         self._next_teleport_time: float = time.time() + self._teleport_interval_s
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
@@ -423,6 +423,14 @@ class NMSBot(commands.Bot):
                 await self._cmd_queue.put(("teleport", []))
             except Exception as e:
                 log(f"Teleport loop: failed to queue teleport: {e}")
+
+            # Reset the Bluesky clip countdown so the post reflects the new planet.
+            if self._bsky:
+                if self._clip_task and not self._clip_task.done():
+                    self._clip_task.cancel()
+                    log("Clip scheduler: cancelled previous clip task after teleport.")
+                self._clip_task = asyncio.create_task(self._delayed_clip_post())
+                log(f"Clip scheduler: restarted {Config.CLIP_POST_DELAY_MINUTES}-minute countdown after teleport.")
 
             self._next_teleport_time += self._teleport_interval_s
 

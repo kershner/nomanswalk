@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 TWITCH_CLIP_URL = "https://api.twitch.tv/helix/clips"
 
 TAGS_POOL = [
-    "nms", "exploration", "automation", "chill", "cozy",
+    "exploration", "automation", "chill", "cozy",
     "twitch", "interactive", "gaming", "procgen",
     "survival", "relaxing", "casual", "python", "programming",
     "streaming"
@@ -35,7 +35,7 @@ TAGS_POOL = [
 
 def _pick_tags():
     chosen = random.sample(TAGS_POOL, min(5, len(TAGS_POOL)))
-    return ["nomanssky"] + chosen
+    return ["nomanssky", "nms"] + chosen
 
 
 def _load_params(params_file="parameters.json"):
@@ -209,7 +209,9 @@ def _download_clip(clip_id, headers, broadcaster_id):
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = ""):
     params = _load_params(params_file)
     status = get_status_text(countdown=countdown)
-    status_text = status.get("main", "").strip()
+    main = status.get("main", "").strip()
+    details = status.get("details", "").strip()
+    status_text = " • ".join(filter(None, [main, details]))
 
     broadcaster_id = params["NMS_TWITCH_BROADCASTER_ID"]
     token = _get_twitch_token(params)
