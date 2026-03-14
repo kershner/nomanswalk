@@ -19,6 +19,7 @@ MENU_CLICKS = [
     (0.50, 0.50, 2.0),  # "Using mods" confirm screen
     (0.35, 0.45, 3.0),  # "Play Game" button
     (0.50, 0.36, 3.0),  # Save slot 1 select
+    (0.50, 0.36, 3.0),  # Save slot 1 select (again)
 ]
 
 WAIT_FOR_GAME_LOAD = 90
