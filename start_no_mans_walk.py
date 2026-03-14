@@ -23,16 +23,6 @@ MENU_CLICKS = [
 
 WAIT_FOR_GAME_LOAD = 90
 
-# Disable HUD sequence
-DISABLE_HUD_CLICKS = [
-    (0.73, 0.05, 3.0),  # OPTIONS tab
-    (0.10, 0.80, 5.0),  # General
-    (0.60, 0.90, 3.0),  # HUD toggle
-    (0.40, 0.60, 3.0),  # Apply
-]
-DISABLE_HUD_MENU_OPEN_DELAY = 2.0
-DISABLE_HUD_ESC_DELAY = 0.8
-
 VENV_PY = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
 
 DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
@@ -163,28 +153,6 @@ def launch_nms_with_retry():
     raise RuntimeError(f"NMS failed to launch after {NMS_MAX_RETRIES} attempts.")
 
 
-def disable_hud_clicks():
-    hwnd, _dlg = focus_nms()
-    if not hwnd:
-        return False
-
-    log("Disable HUD: opening menu (ESC)...")
-    send_key("esc", 0.1)
-    time.sleep(DISABLE_HUD_MENU_OPEN_DELAY)
-
-    log("Disable HUD: navigating options...")
-    for i, (px, py, delay) in enumerate(DISABLE_HUD_CLICKS, start=1):
-        log(f"  HUD click {i}/{len(DISABLE_HUD_CLICKS)}")
-        click_at_percent(px, py, delay_after=delay)
-
-    log("Disable HUD: exiting menu (ESC x2)...")
-    send_key("esc", 0.1)
-    time.sleep(DISABLE_HUD_ESC_DELAY)
-    send_key("esc", 0.1)
-
-    return True
-
-
 def teleport_to_new_planet():
     """Focus NMS, send the teleport key, and wait for the planet to load."""
     log("Teleporting to new planet before stream starts...")
@@ -231,8 +199,8 @@ def main():
     log(f"Waiting {WAIT_FOR_GAME_LOAD}s for game load...")
     time.sleep(WAIT_FOR_GAME_LOAD)
 
-    log("Disabling HUD via menu clicks...")
-    disable_hud_clicks()    
+    log("Disabling HUD via hud_toggle mod...")
+    send_key("f5", 0.1)
 
     log("Teleporting to starting planet...")
     teleport_to_new_planet()
