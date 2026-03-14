@@ -61,7 +61,7 @@ _APP_DATA_SIZE = 0x864D60
 #   TemperatureUnit: 0=Invalid, 1=Celsius, 2=Fahrenheit, 3=Kelvin
 _FINGERPRINT = [
     (0x3A08, 0),  # Language        = English
-    (0x3A38, 2),  # PlayerVoice     = Low
+    (0x3A38, 0),  # PlayerVoice     = Low
     (0x3A58, 0),  # SuitVoice       = Off
     (0x3A5C, 2),  # TemperatureUnit = Fahrenheit
 ]
