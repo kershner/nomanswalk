@@ -13,7 +13,7 @@ The code is written entirely in Python and consists of several modules:
 | Module | Description |
 |---|---|
 | [`nms_bot.py`](https://github.com/kershner/nomanswalk/blob/master/nms_bot.py) | Provides a direct interfacing to the running No Man's Sky process. Sends keyboard/mouse input, logs game state, checks if the Walker is stuck. |
-| [`nms_twitch_bot.py`](https://github.com/kershner/nomanswalk/blob/master/nms_twitch_bot.py) | Twitch interface. Takes command input from chat and passes to nms_bot.py and manages timers for loading random planets, Bluesky posts, daily shutdown. |
+| [`nms_twitch_bot.py`](https://github.com/kershner/nomanswalk/blob/master/nms_twitch_bot.py) | Twitch interface. Passes command input from chat to nms_bot.py and manages timers for loading random planets, Bluesky posts, daily shutdown. |
 | [`nms_bluesky.py`](https://github.com/kershner/nomanswalk/blob/master/nms_bluesky.py) | Bluesky interface for posting Twitch clips and maintaining "Live" status. |
 | [`dev_server.py`](https://github.com/kershner/nomanswalk/blob/master/dev_server.py) | Basic Flask server for local nms_bot.py development. |
 | [`start_no_mans_walk.py`](https://github.com/kershner/nomanswalk/blob/master/start_no_mans_walk.py) | Handles the boot sequence - opening Steam/modded NMS, starting the OBS stream, launching the Twitch bot. |
