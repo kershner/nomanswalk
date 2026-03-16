@@ -26,6 +26,26 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_TITLE = "No Man's Sky"
 
 
+def _set_dpi_aware():
+    """Declare DPI awareness so Win32 coordinate APIs return physical pixels.
+    Without this, Windows scales coordinates for 'compatibility' on high-DPI
+    displays, causing clicks to land in the wrong spot."""
+    try:
+        # Windows 10 1703+ — handles per-monitor scaling correctly
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(
+            ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        )
+    except AttributeError:
+        try:
+            # Windows 8.1+ fallback
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except AttributeError:
+            # Vista fallback
+            ctypes.windll.user32.SetProcessDPIAware()
+
+_set_dpi_aware()
+
+
 def log(msg):
     logging.info(f"{msg}")
 
@@ -61,6 +81,10 @@ def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
     hwnd, _dlg = focus_nms()
     if not hwnd:
         return
+
+    # Wait for SW_RESTORE animation to finish before measuring the window rect,
+    # otherwise GetClientRect can return stale dimensions mid-transition.
+    time.sleep(0.1)
 
     left, top, right, bottom = win32gui.GetClientRect(hwnd)
     w = right - left
