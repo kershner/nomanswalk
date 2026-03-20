@@ -27,15 +27,16 @@ log = logging.getLogger(__name__)
 TWITCH_CLIP_URL = "https://api.twitch.tv/helix/clips"
 
 TAGS_POOL = [
-    "exploration", "automation", "chill", "cozy",
-    "twitch", "interactive", "gaming", "procgen",
-    "survival", "relaxing", "casual", "python", "programming",
-    "streaming"
+    "exploration", "automation", "chill", "cozy", "SciFi", "Ambient", "SpaceGame",
+    "twitch", "interactive", "gaming", "procgen", "PCGaming", "Coding",
+    "python", "programming", "games", "VirtualWorlds", "gamescreenshots", 
+    "streaming", "VirtualPhotography", "NoMansHigh", "HelloGames", "gamedev", 
+    "chillstream", "ChillGaming", "videogames", "AlienWorlds", "Exoplanets", "Space", "DIYTech"
 ]
 
 def _pick_tags():
     chosen = random.sample(TAGS_POOL, min(5, len(TAGS_POOL)))
-    return ["nomanssky", "nms"] + chosen
+    return ["NoMansSky", "nms"] + chosen
 
 
 def _load_params(params_file="parameters.json"):
