@@ -24,7 +24,7 @@ import nmspy.data.types as nms
 # ── Config ────────────────────────────────────────────────────────────────────
 
 QUICK_LOAD_KEY = "f9"
-UI_SLOT_NUMBER = 1   # 1-based UI slot number
+UI_SLOT_NUMBER = 0
 
 # ── Offsets ───────────────────────────────────────────────────────────────────
 
