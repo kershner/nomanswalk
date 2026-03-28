@@ -177,8 +177,8 @@ def _do_unstuck(timestamp):
     _last_move_t = now
 
     if _stuck_last_cmd == "jet":
-        log(f"STUCK: still stuck after jet, trying right 30")
-        COMMANDS["right"].func(["30"])
+        log(f"STUCK: still stuck after jet, trying right 100")
+        COMMANDS["right"].func(["100"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
         log(f"STUCK: still stuck after right, trying tap_e")
@@ -219,7 +219,7 @@ def left_click(hold_seconds: float = 0.0):
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
-def _clamp(val, lo=1, hi=50) -> int:
+def _clamp(val, lo=1, hi=100) -> int:
     try:
         return max(lo, min(hi, int(val)))
     except (TypeError, ValueError):
@@ -240,8 +240,8 @@ def jet(args=None):
     send_key("space", 8)
 
 def dig(args=None):
-    """Hold left click for 3 seconds"""
-    left_click(3.0)
+    """Hold left click for 10 seconds"""
+    left_click(10.0)
 
 
 def walk(args=None):
@@ -382,7 +382,7 @@ class Command:
 
 COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
-    "dig":     Command(dig,     "Hold left-click for 3s to dig terrain.",aliases=("d",)),
+    "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=("d",)),
     "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
