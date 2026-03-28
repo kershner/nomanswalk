@@ -1,4 +1,4 @@
-from utils import focus_nms, send_key, log, click_at_percent
+from utils import focus_nms, send_key, log
 from dataclasses import dataclass
 from typing import Callable
 import threading

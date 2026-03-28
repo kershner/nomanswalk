@@ -1,4 +1,4 @@
-from utils import BASE_DIR, focus_nms, log, send_key, click_at_percent
+from utils import BASE_DIR, focus_nms, log, send_key
 from nms_bot import PLANET_LOAD_SECONDS
 import obsws_python as obs
 import subprocess
@@ -14,13 +14,6 @@ import os
 # CONFIG
 # ─────────────────────────────────────────────────────────────
 WAIT_FOR_MODE_SELECT = 90
-
-MENU_CLICKS = [
-    (0.50, 0.50, 2.0),  # "Using mods" confirm screen
-    (0.35, 0.45, 3.0),  # "Play Game" button
-    (0.50, 0.36, 3.0),  # Save slot 1 select
-    (0.50, 0.36, 3.0),  # Save slot 1 select (again)
-]
 
 WAIT_FOR_GAME_LOAD = 90
 
@@ -192,10 +185,8 @@ def main():
     log(f"Waiting {WAIT_FOR_MODE_SELECT}s...")
     time.sleep(WAIT_FOR_MODE_SELECT)
 
-    log("Navigating menus...")
-    for i, (px, py, delay) in enumerate(MENU_CLICKS, start=1):
-        log(f"Click {i}/{len(MENU_CLICKS)}")
-        click_at_percent(px, py, delay_after=delay)
+    log("Sending quick_load key (F9)...")
+    send_key("f9", 0.1)
 
     log(f"Waiting {WAIT_FOR_GAME_LOAD}s for game load...")
     time.sleep(WAIT_FOR_GAME_LOAD)

@@ -48,68 +48,7 @@ _set_dpi_aware()
 
 def log(msg):
     logging.info(f"{msg}")
-
-
-def _send_click():
-    """Use SendInput instead of mouse_event — more reliable, harder for Windows to drop."""
-    INPUT_MOUSE = 0
-    MOUSEEVENTF_LEFTDOWN = 0x0002
-    MOUSEEVENTF_LEFTUP = 0x0004
-
-    class MOUSEINPUT(ctypes.Structure):
-        _fields_ = [
-            ("dx", ctypes.c_long),
-            ("dy", ctypes.c_long),
-            ("mouseData", ctypes.c_ulong),
-            ("dwFlags", ctypes.c_ulong),
-            ("time", ctypes.c_ulong),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-        ]
-
-    class INPUT(ctypes.Structure):
-        _fields_ = [("type", ctypes.c_ulong), ("mi", MOUSEINPUT)]
-
-    down = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dwFlags=MOUSEEVENTF_LEFTDOWN))
-    up   = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dwFlags=MOUSEEVENTF_LEFTUP))
-
-    ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
-    time.sleep(0.02)
-    ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
-
-
-def click_at_percent(px, py, delay_after=0.05, move_cursor=True):
-    hwnd, _dlg = focus_nms()
-    if not hwnd:
-        return
-
-    # Wait for SW_RESTORE animation to finish before measuring the window rect,
-    # otherwise GetClientRect can return stale dimensions mid-transition.
-    time.sleep(0.1)
-
-    left, top, right, bottom = win32gui.GetClientRect(hwnd)
-    w = right - left
-    h = bottom - top
-
-    cx = int(w * px)
-    cy = int(h * py)
-
-    ox, oy = win32gui.ClientToScreen(hwnd, (0, 0))
-    sx = ox + cx
-    sy = oy + cy
-
-    if move_cursor:
-        win32api.SetCursorPos((sx, sy))
-        time.sleep(0.05)
-
-    win32gui.SetForegroundWindow(hwnd)
-    time.sleep(0.05)
-
-    _send_click()
-
-    if move_cursor:
-        log(f"Clicked ({px:.2f}, {py:.2f}) -> screen ({sx}, {sy})")
-    time.sleep(delay_after)
-
+    
 
 def send_key(key: str, duration: float = 0.1, modifiers: list[str] | None = None):
     """Focus NMS then send key or key combo."""
