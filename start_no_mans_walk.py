@@ -65,6 +65,31 @@ def _obs_log_has(log_path, *fragments):
         return False
 
 
+def _wait_for_obs_ready(ws, timeout=30, interval=2):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            ws.get_version()
+            return True
+        except Exception:
+            time.sleep(interval)
+    return False
+    
+
+def _start_stream_with_retry(ws, retries=5, interval=2):
+    for i in range(retries):
+        try:
+            ws.start_stream()
+            return True
+        except Exception as e:
+            if "207" in str(e) or "not ready" in str(e).lower():
+                log(f"OBS not ready yet, retrying in {interval}s... ({i+1}/{retries})")
+                time.sleep(interval)
+            else:
+                raise
+    return False
+
+
 def start_obs():
     """Launch OBS and wait for the stream to be live."""
     if is_process_running("obs64.exe"):
@@ -93,7 +118,12 @@ def start_obs():
             continue
 
         ws = obs.ReqClient(host="localhost", port=4455, password="")
-        ws.start_stream()
+        if not _wait_for_obs_ready(ws):
+            log("ERROR: OBS websocket connected but OBS never became ready.")
+            return
+        if not _start_stream_with_retry(ws):
+            log("ERROR: Failed to start stream after retries.")
+            return
         log("OBS stream live.")
         return
 
