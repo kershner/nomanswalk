@@ -30,6 +30,68 @@ from nmspy.common import gameData
 
 from shared_state import NMSModState, _make_logger
 
+# ---------------------------------------------------------------------------
+# Offsets verified via memory scanning
+# ---------------------------------------------------------------------------
+GAMESTATE_OFFSET = 0x10f0   # mpData.mGameState (was 0xDB0 pre-update)
+PLAYER_STATE_OFF = 0xAAD0   # mGameState.mPlayerState
+GA_ADDR_OFFSET   = 0x180    # cGcPlayerState.mLocation.GalacticAddress
+
+# New cGcGalacticAddressData field layout:
+#   PlanetIndex      +0x00
+#   SolarSystemIndex +0x04
+#   VoxelX           +0x08
+#   VoxelY           +0x0C
+#   VoxelZ           +0x10
+#   RealityIndex     +0x14
+GA_PLANET_IDX = 0x00
+GA_SOLAR_IDX  = 0x04
+GA_VOXEL_X    = 0x08
+GA_VOXEL_Y    = 0x0C
+GA_VOXEL_Z    = 0x10
+GA_REALITY    = 0x14
+
+
+def _get_mpdata_addr():
+    try:
+        app = gameData.GcApplication
+        if app is None:
+            return 0
+        return ctypes.cast(app.mpData, ctypes.c_void_p).value or 0
+    except Exception:
+        return 0
+
+
+def _get_ps_addr():
+    """Return raw address of cGcPlayerState in game memory."""
+    mp = _get_mpdata_addr()
+    if not mp:
+        return 0
+    return mp + GAMESTATE_OFFSET + PLAYER_STATE_OFF
+
+
+def _get_ga_base():
+    """Return raw address of GalacticAddress in game memory."""
+    ps = _get_ps_addr()
+    if not ps:
+        return 0
+    return ps + GA_ADDR_OFFSET
+
+
+def _read_ga_int(field_off):
+    base = _get_ga_base()
+    if not base:
+        return 0
+    return ctypes.c_int32.from_address(base + field_off).value
+
+
+def _write_ga_int(field_off, value):
+    base = _get_ga_base()
+    if not base:
+        return False
+    ctypes.c_int32.from_address(base + field_off).value = value
+    return True
+
 _tlog = _make_logger("Teleporter", "random_teleporter.log")
 # _tlog.info("=" * 60)
 # _tlog.info("teleporter.py loaded")
@@ -45,25 +107,26 @@ _fsm_state_str = basic.cTkFixedString[0x10]()
 
 def _tread_location(label):
     try:
-        ps = gameData.player_state
-        if ps is None:
-            return
-        ga = ps.mLocation.GalacticAddress
-        # _tlog.info("[%s] voxel=(%d,%d,%d)  sys=%d  planet=%d",
-        #            label, int(ga.VoxelX), int(ga.VoxelY), int(ga.VoxelZ),
-        #            int(ga.SolarSystemIndex), int(ga.PlanetIndex))
+        _tlog.info("[%s] planet=%d sys=%d voxel=(%d,%d,%d) reality=%d",
+                   label,
+                   _read_ga_int(GA_PLANET_IDX),
+                   _read_ga_int(GA_SOLAR_IDX),
+                   _read_ga_int(GA_VOXEL_X),
+                   _read_ga_int(GA_VOXEL_Y),
+                   _read_ga_int(GA_VOXEL_Z),
+                   _read_ga_int(GA_REALITY))
     except Exception:
         _tlog.error("[%s] exception:\n%s", label, traceback.format_exc())
 
 
 def _write_location(ps, vx, vy, vz, sys_idx, planet_idx):
-    ga = ps.mLocation.GalacticAddress
-    ga.VoxelX = vx
-    ga.VoxelY = vy
-    ga.VoxelZ = vz
-    ga.SolarSystemIndex = sys_idx
-    ga.PlanetIndex = planet_idx
-    ps.mLocation.RealityIndex = 0
+    """Write destination to GalacticAddress using confirmed arithmetic offsets."""
+    _write_ga_int(GA_PLANET_IDX, planet_idx)
+    _write_ga_int(GA_SOLAR_IDX,  sys_idx)
+    _write_ga_int(GA_VOXEL_X,    vx)
+    _write_ga_int(GA_VOXEL_Y,    vy)
+    _write_ga_int(GA_VOXEL_Z,    vz)
+    _write_ga_int(GA_REALITY,    0)
 
 
 def _trigger_load(state) -> bool:
@@ -104,13 +167,12 @@ def _prepare_teleport(state, vx, vy, vz, sys_idx, planet_idx=SAFE_PLANET_INDEX):
     if state.teleport_deferred:
         _tlog.warning("[TELEPORT] Teleport already queued — ignoring duplicate key press")
         return
-    ps = gameData.player_state
-    if ps is None:
-        _tlog.error("[TELEPORT] player_state is None")
+    if not _get_ga_base():
+        _tlog.error("[TELEPORT] Cannot get GA address")
         return
     _tread_location("BEFORE")
     vx = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vx))
-    vy = max(0, min(VOXEL_Y_MAX, vy))
+    vy = max(-VOXEL_Y_MAX, min(VOXEL_Y_MAX, vy))
     vz = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vz))
     sys_idx = max(0, min(SYSTEM_MAX, sys_idx))
     state.dest_vx = vx
@@ -118,19 +180,25 @@ def _prepare_teleport(state, vx, vy, vz, sys_idx, planet_idx=SAFE_PLANET_INDEX):
     state.dest_vz = vz
     state.dest_sys = sys_idx
     state.dest_planet = planet_idx
-    # _tlog.info("[TELEPORT] Destination written → voxel=(%d,%d,%d)  sys=%d  planet=%d; deferring StateChange to next Update tick",
-    #            vx, vy, vz, sys_idx, planet_idx)
-    _write_location(ps, vx, vy, vz, sys_idx, planet_idx)
+    _tlog.info("[TELEPORT] Writing → planet=%d sys=%d voxel=(%d,%d,%d)",
+               planet_idx, sys_idx, vx, vy, vz)
+    _write_location(None, vx, vy, vz, sys_idx, planet_idx)
     _tread_location("AFTER WRITE")
     state.teleport_deferred = True
 
 
+LOAD_TIMEOUT_S = 25.0  # clear loading flag if it's been stuck this long
+
 def _flush_deferred_teleport(state):
     """Called from on_main_loop (Update.after) — safe context for StateChange."""
+    # Clear stale loading flag (APPVIEW FSM hook may not fire in updated game)
+    if state.loading and (time.time() - state.load_start_time) > LOAD_TIMEOUT_S:
+        _tlog.info("[TELEPORT] Load timeout — clearing loading flag")
+        state.loading = False
+        state.warp_pending = False
     if not state.teleport_deferred:
         return
     state.teleport_deferred = False
-    # _tlog.info("[TELEPORT] Flushing deferred teleport → calling _trigger_load from Update tick")
     _trigger_load(state)
 
 
@@ -191,13 +259,12 @@ class Teleporter(Mod):
 
     @on_key_pressed("[")
     def key_nearby(self):
-        # _tlog.info("*** KEY:[  NEARBY ***")
-        ps = gameData.player_state
-        if ps is None:
-            return
-        ga = ps.mLocation.GalacticAddress
-        cur_sys = int(ga.SolarSystemIndex)
+        cur_sys = _read_ga_int(GA_SOLAR_IDX)
         new_sys = cur_sys
         while new_sys == cur_sys:
             new_sys = random.randint(0, SYSTEM_MAX)
-        _prepare_teleport(self.state, int(ga.VoxelX), int(ga.VoxelY), int(ga.VoxelZ), new_sys)
+        _prepare_teleport(self.state,
+                          _read_ga_int(GA_VOXEL_X),
+                          _read_ga_int(GA_VOXEL_Y),
+                          _read_ga_int(GA_VOXEL_Z),
+                          new_sys)
