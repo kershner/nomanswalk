@@ -111,8 +111,10 @@ def get_status_text(countdown: str = "") -> dict:
             state = json.load(f)
 
         planet = state.get("planet", {})
+        
         name = planet.get("name", "unknown")
-        biome = f"Biome: {planet.get('biome', 'unknown')}"
+        biome = planet.get('biome', 'unknown')
+        galaxy = f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')}"
         size = f"Size: {planet.get('planet_size', 'unknown')}"
         rings = "Ringed" if planet.get("has_rings") else ""
 
@@ -125,9 +127,9 @@ def get_status_text(countdown: str = "") -> dict:
         fauna = planet.get("creature_life", "")
         fauna = f"Fauna: {fauna}" if fauna else ""
 
-        planet_stats = " • ".join(filter(None, [biome, size, rings, weather, flora, fauna]))
+        planet_stats = " • ".join(filter(None, [galaxy, size, rings, weather, flora, fauna]))
 
-        main_parts = [f"Walking across {name}"]
+        main_parts = [f"Walking across {name} ({biome})"]
         if countdown:
             main_parts.append(f"New planet in {countdown}")
         main_status = " • ".join(main_parts)

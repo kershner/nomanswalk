@@ -37,7 +37,7 @@ GAMESTATE_OFFSET = 0x10f0   # mpData.mGameState (was 0xDB0 pre-update)
 PLAYER_STATE_OFF = 0xAAD0   # mGameState.mPlayerState
 GA_ADDR_OFFSET   = 0x180    # cGcPlayerState.mLocation.GalacticAddress
 
-# New cGcGalacticAddressData field layout:
+# cGcGalacticAddressData field layout:
 #   PlanetIndex      +0x00
 #   SolarSystemIndex +0x04
 #   VoxelX           +0x08
@@ -50,6 +50,22 @@ GA_VOXEL_X    = 0x08
 GA_VOXEL_Y    = 0x0C
 GA_VOXEL_Z    = 0x10
 GA_REALITY    = 0x14
+
+# ---------------------------------------------------------------------------
+# Galaxy constants
+# ---------------------------------------------------------------------------
+GALAXY_MIN        = 0    # Euclid
+GALAXY_MAX        = 254  # 255 galaxies total (indices 0–254)
+GALAXY_EISSENTAM  = 9    # Eissentam — lush galaxy (paradise planets more common)
+
+# ---------------------------------------------------------------------------
+# Other limits
+# ---------------------------------------------------------------------------
+RESPAWN_PORTAL    = internal_enums.RespawnReason.Portal
+VOXEL_XZ_MAX      = 2000
+VOXEL_Y_MAX       = 255
+SYSTEM_MAX        = 599
+SAFE_PLANET_INDEX = 0
 
 
 def _get_mpdata_addr():
@@ -92,16 +108,10 @@ def _write_ga_int(field_off, value):
     ctypes.c_int32.from_address(base + field_off).value = value
     return True
 
+
 _tlog = _make_logger("Teleporter", "random_teleporter.log")
 # _tlog.info("=" * 60)
 # _tlog.info("teleporter.py loaded")
-
-RESPAWN_PORTAL = internal_enums.RespawnReason.Portal
-VOXEL_XZ_MAX = 2000
-VOXEL_Y_MAX = 255
-SYSTEM_MAX = 599
-SAFE_PLANET_INDEX = 0
-
 _fsm_state_str = basic.cTkFixedString[0x10]()
 
 
@@ -119,14 +129,14 @@ def _tread_location(label):
         _tlog.error("[%s] exception:\n%s", label, traceback.format_exc())
 
 
-def _write_location(ps, vx, vy, vz, sys_idx, planet_idx):
+def _write_location(vx, vy, vz, sys_idx, planet_idx, reality_idx):
     """Write destination to GalacticAddress using confirmed arithmetic offsets."""
     _write_ga_int(GA_PLANET_IDX, planet_idx)
     _write_ga_int(GA_SOLAR_IDX,  sys_idx)
     _write_ga_int(GA_VOXEL_X,    vx)
     _write_ga_int(GA_VOXEL_Y,    vy)
     _write_ga_int(GA_VOXEL_Z,    vz)
-    _write_ga_int(GA_REALITY,    0)
+    _write_ga_int(GA_REALITY,    reality_idx)
 
 
 def _trigger_load(state) -> bool:
@@ -155,14 +165,16 @@ def _trigger_load(state) -> bool:
         return False
 
 
-def _prepare_teleport(state, vx, vy, vz, sys_idx, planet_idx=SAFE_PLANET_INDEX):
-    """Write the destination into game memory and arm the deferred trigger.
+def _prepare_teleport(state, vx, vy, vz, sys_idx,
+                      planet_idx=SAFE_PLANET_INDEX, reality_idx=None):
+    """Write destination into game memory and arm the deferred trigger.
 
-    Called from key-press hooks (unsafe to call StateChange here).
-    The actual StateChange fires on the next Update tick via _flush_deferred_teleport.
+    reality_idx defaults to a random galaxy if not specified.
+    Called from key-press hooks — StateChange fires on the next Update tick.
     """
     if state.loading:
-        _tlog.warning("[TELEPORT] Load in progress (%.1fs) — ignoring", time.time() - state.load_start_time)
+        _tlog.warning("[TELEPORT] Load in progress (%.1fs) — ignoring",
+                      time.time() - state.load_start_time)
         return
     if state.teleport_deferred:
         _tlog.warning("[TELEPORT] Teleport already queued — ignoring duplicate key press")
@@ -170,28 +182,35 @@ def _prepare_teleport(state, vx, vy, vz, sys_idx, planet_idx=SAFE_PLANET_INDEX):
     if not _get_ga_base():
         _tlog.error("[TELEPORT] Cannot get GA address")
         return
+
+    if reality_idx is None:
+        reality_idx = random.randint(GALAXY_MIN, GALAXY_MAX)
+
+    vx          = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vx))
+    vy          = max(-VOXEL_Y_MAX,  min(VOXEL_Y_MAX,  vy))
+    vz          = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vz))
+    sys_idx     = max(0, min(SYSTEM_MAX, sys_idx))
+    reality_idx = max(GALAXY_MIN, min(GALAXY_MAX, reality_idx))
+
     _tread_location("BEFORE")
-    vx = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vx))
-    vy = max(-VOXEL_Y_MAX, min(VOXEL_Y_MAX, vy))
-    vz = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, vz))
-    sys_idx = max(0, min(SYSTEM_MAX, sys_idx))
-    state.dest_vx = vx
-    state.dest_vy = vy
-    state.dest_vz = vz
-    state.dest_sys = sys_idx
+    _tlog.info("[TELEPORT] Writing → reality=%d planet=%d sys=%d voxel=(%d,%d,%d)",
+               reality_idx, planet_idx, sys_idx, vx, vy, vz)
+
+    state.dest_vx     = vx
+    state.dest_vy     = vy
+    state.dest_vz     = vz
+    state.dest_sys    = sys_idx
     state.dest_planet = planet_idx
-    _tlog.info("[TELEPORT] Writing → planet=%d sys=%d voxel=(%d,%d,%d)",
-               planet_idx, sys_idx, vx, vy, vz)
-    _write_location(None, vx, vy, vz, sys_idx, planet_idx)
+
+    _write_location(vx, vy, vz, sys_idx, planet_idx, reality_idx)
     _tread_location("AFTER WRITE")
     state.teleport_deferred = True
 
 
-LOAD_TIMEOUT_S = 25.0  # clear loading flag if it's been stuck this long
+LOAD_TIMEOUT_S = 25.0
 
 def _flush_deferred_teleport(state):
     """Called from on_main_loop (Update.after) — safe context for StateChange."""
-    # Clear stale loading flag (APPVIEW FSM hook may not fire in updated game)
     if state.loading and (time.time() - state.load_start_time) > LOAD_TIMEOUT_S:
         _tlog.info("[TELEPORT] Load timeout — clearing loading flag")
         state.loading = False
@@ -209,7 +228,7 @@ def _flush_deferred_teleport(state):
 class Teleporter(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Random teleporter"
-    __version__ = "1.0"
+    __version__ = "1.1"
 
     state = NMSModState()
 
@@ -248,18 +267,44 @@ class Teleporter(Mod):
             _tlog.warning("[RESPAWN] hook error:\n%s", traceback.format_exc())
         return None
 
+    # -----------------------------------------------------------------------
+    # Key bindings
+    # -----------------------------------------------------------------------
+
     @on_key_pressed("o")
-    def key_random(self):
-        # _tlog.info("*** KEY:O  RANDOM GALAXY ***")
+    def key_random_local(self):
+        """Random system + coords, stays in the current galaxy."""
+        cur_reality = _read_ga_int(GA_REALITY)
+        
+        # Override galaxy here
+        cur_reality = GALAXY_EISSENTAM
+        
         _prepare_teleport(self.state,
                           random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
                           random.randint(0, VOXEL_Y_MAX),
                           random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                          random.randint(0, SYSTEM_MAX))
+                          random.randint(0, SYSTEM_MAX),
+                          reality_idx=cur_reality)
+
+    @on_key_pressed("p")
+    def key_random_galaxy(self):
+        """Fully random warp — random galaxy, coords, and system."""
+        cur_reality = _read_ga_int(GA_REALITY)
+        new_reality = cur_reality
+        while new_reality == cur_reality:
+            new_reality = random.randint(GALAXY_MIN, GALAXY_MAX)
+        _prepare_teleport(self.state,
+                          random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                          random.randint(0, VOXEL_Y_MAX),
+                          random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                          random.randint(0, SYSTEM_MAX),
+                          reality_idx=new_reality)
 
     @on_key_pressed("[")
     def key_nearby(self):
-        cur_sys = _read_ga_int(GA_SOLAR_IDX)
+        """Random nearby system, same galaxy and voxel region."""
+        cur_sys     = _read_ga_int(GA_SOLAR_IDX)
+        cur_reality = _read_ga_int(GA_REALITY)
         new_sys = cur_sys
         while new_sys == cur_sys:
             new_sys = random.randint(0, SYSTEM_MAX)
@@ -267,4 +312,5 @@ class Teleporter(Mod):
                           _read_ga_int(GA_VOXEL_X),
                           _read_ga_int(GA_VOXEL_Y),
                           _read_ga_int(GA_VOXEL_Z),
-                          new_sys)
+                          new_sys,
+                          reality_idx=cur_reality)
