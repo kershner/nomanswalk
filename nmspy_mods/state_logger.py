@@ -27,6 +27,7 @@ import nmspy.data.types as nms
 from nmspy.data.enums import EnvironmentLocation
 from nmspy.decorators import on_state_change, on_fully_booted
 from nmspy.common import gameData
+from nmspy.engine import GetNodeAbsoluteTransMatrix
 
 from shared_state import (
     NMSModState,
@@ -314,14 +315,6 @@ def galaxy_name(idx: int) -> str:
 # Raw-memory offsets
 # ---------------------------------------------------------------------------
 
-MSIM_OFFSET = 0x4B79D0
-# World-space player position (physics-corrected, stops when hitting walls).
-# Found via two-snapshot memory diff. Four identical copies exist; using first.
-# Values are large (~45000) because they're planet-center-relative coordinates.
-PLAYER_POS_X_OFFSET = 0xA88C4
-PLAYER_POS_Y_OFFSET = 0xA88CC  # height component -- needs verification on hilly terrain
-PLAYER_POS_Z_OFFSET = 0xA88C8
-
 # mGameState offset within cGcApplication.Data
 GAMESTATE_OFFSET = 0x10F0
 
@@ -339,26 +332,20 @@ def _get_mp_data_addr():
         return 0
 
 
-def _get_sim_base():
-    mp = _get_mp_data_addr()
-    return (mp + MSIM_OFFSET) if mp else 0
-
-
 def _read_player_position_from_sim():
     try:
-        sim_base = _get_sim_base()
-        if not sim_base:
+        player = gameData.player
+        if player is None:
             return None
-        x = ctypes.c_float.from_address(sim_base + PLAYER_POS_X_OFFSET).value
-        y = ctypes.c_float.from_address(sim_base + PLAYER_POS_Y_OFFSET).value
-        z = ctypes.c_float.from_address(sim_base + PLAYER_POS_Z_OFFSET).value
-
+        mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
+        pos = mat.pos
+        x, y, z = float(pos.x), float(pos.y), float(pos.z)
         if not all(abs(v) < 100_000_000 for v in (x, y, z)):
             return None
         return {
-            "x": round(float(x), 3),
-            "y": round(float(y), 3),
-            "z": round(float(z), 3),
+            "x": round(x, 3),
+            "y": round(y, 3),
+            "z": round(z, 3),
         }
     except Exception:
         return None
