@@ -50,6 +50,12 @@ def is_planet_loading() -> bool:
         return _planet_loading
 
 
+def _is_in_cave() -> bool:
+    data = NMSState.get_data()
+    location = ((data.get("environment") or {}).get("location") or "").strip()
+    return location == "Cave"
+
+
 # ---------------------------------------------------------------------------
 # State tracker
 # ---------------------------------------------------------------------------
@@ -57,19 +63,26 @@ class NMSState:
     _lock = threading.Lock()
     _current: str = "UNKNOWN"
     _timestamp: float = 0.0
+    _data: dict = {}
 
     @classmethod
-    def update(cls, state: str, timestamp: float):
+    def update(cls, state: str, timestamp: float, data: dict):
         with cls._lock:
             if state != cls._current:
                 log(f"State changed: {cls._current} -> {state}")
                 cls._current = state
             cls._timestamp = timestamp
+            cls._data = data
 
     @classmethod
     def get(cls) -> str:
         with cls._lock:
             return cls._current
+
+    @classmethod
+    def get_data(cls) -> dict:
+        with cls._lock:
+            return dict(cls._data)
 
 
 def poll_state():
@@ -80,7 +93,7 @@ def poll_state():
 
             ts = float(data.get("timestamp", 0.0))
             state = data.get("state", "UNKNOWN")
-            NMSState.update(state, ts)
+            NMSState.update(state, ts, data)
 
             check_if_stuck(state, data, ts)
 
@@ -105,8 +118,6 @@ def check_if_stuck(state, data, timestamp):
         return
 
     if state != "ON_FOOT":
-        # Optional: uncomment if you want visibility when stuck-check is skipped.
-        # log(f"STUCK-CHECK: skipped (state={state})")
         return
 
     pos = (data.get("environment") or {}).get("player_position") or {}
@@ -116,11 +127,8 @@ def check_if_stuck(state, data, timestamp):
     has_z = isinstance(z, (int, float))
 
     if not has_xy:
-        # Optional: uncomment if you want visibility when stuck-check is skipped.
-        # log(f"STUCK-CHECK: skipped (bad coords x={x!r} y={y!r} z={z!r})")
         return
 
-    # Keep _last_xy as a 2-tuple or 3-tuple depending on whether we’re using Z.
     use_z = STUCK_USE_Z and has_z
     cur = (float(x), float(y), float(z)) if use_z else (float(x), float(y))
 
@@ -133,35 +141,22 @@ def check_if_stuck(state, data, timestamp):
 
     if _last_xy is None:
         _last_xy = cur
-        _last_move_t = now  # wall clock
+        _last_move_t = now
         return
 
     d = dist(cur, _last_xy)
     elapsed = now - _last_move_t
 
     if d >= STUCK_EPS:
-        # Moving again — reset everything
         _last_xy, _last_move_t, _stuck, _stuck_last_cmd = cur, now, False, None
         return
 
     if (not _stuck) and elapsed >= STUCK_SECONDS:
         _stuck = True
-        log(
-            "STUCK: trigger fired "
-            f"(state={state}, use_z={use_z}, d={d:.3f} < eps={STUCK_EPS}, "
-            f"elapsed={elapsed:.2f}s >= {STUCK_SECONDS}s, "
-            f"last={_last_xy}, cur={cur}, last_cmd={_stuck_last_cmd})"
-        )
         _do_unstuck(timestamp)
         return
 
     if _stuck and elapsed >= STUCK_SECONDS:
-        log(
-            "STUCK: still stuck "
-            f"(state={state}, use_z={use_z}, d={d:.3f} < eps={STUCK_EPS}, "
-            f"elapsed={elapsed:.2f}s >= {STUCK_SECONDS}s, "
-            f"last={_last_xy}, cur={cur}, last_cmd={_stuck_last_cmd})"
-        )
         _do_unstuck(timestamp)
         return
 
@@ -176,19 +171,21 @@ def _do_unstuck(timestamp):
     _last_unstuck_t = now
     _last_move_t = now
 
+    if _is_in_cave():
+        log(f"STUCK: in cave, trying sky()")
+        COMMANDS["sky"].func()
+        _stuck_last_cmd = "sky"
+        return
+
     if _stuck_last_cmd == "jet":
         log(f"STUCK: still stuck after jet, trying right 100")
         COMMANDS["right"].func(["100"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
-        log(f"STUCK: still stuck after right, trying dig + jet")
-        _dig_and_jet()
-        _stuck_last_cmd = "dig_jet"
-    elif _stuck_last_cmd == "dig_jet":
-        log(f"STUCK: still stuck after dig + jet, trying tap_e")
+        log(f"STUCK: still stuck after right, trying tap_e")
         COMMANDS["tap_e"].func()
         _stuck_last_cmd = "tap_e"
-    else:  # None or "tap_e"
+    else:
         log(f"STUCK: trying jet()")
         COMMANDS["jet"].func()
         _stuck_last_cmd = "jet"
@@ -218,7 +215,7 @@ def left_click(hold_seconds: float = 0.0):
     if hold_seconds > 0:
         time.sleep(float(hold_seconds))
     else:
-        time.sleep(0.02)  # normal click tap
+        time.sleep(0.02)
 
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
@@ -243,15 +240,16 @@ def jet(args=None):
     """Tap spacebar (jetpack burst)"""
     send_key("space", 5)
 
+
 def dig(args=None):
     """Hold left click for 10 seconds"""
     left_click(10.0)
 
-def _dig_and_jet():
-    t = threading.Thread(target=COMMANDS["dig"].func, daemon=True)
-    t.start()
-    time.sleep(0.1)
-    COMMANDS["jet"].func()
+
+def sky(args=None):
+    """Press Y to trigger the sky-drop mod"""
+    send_key("y", 0.1)
+    
 
 def walk(args=None):
     global _last_walk_t, _last_move_t, _last_xy
@@ -392,6 +390,7 @@ class Command:
 COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
     "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=("d",)),
+    "sky":     Command(sky,     "Press Y to trigger the sky-drop mod.",  hidden=True),
     "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
