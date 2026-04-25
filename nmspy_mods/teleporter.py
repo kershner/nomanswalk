@@ -277,7 +277,7 @@ class Teleporter(Mod):
         cur_reality = _read_ga_int(GA_REALITY)
         
         # Override galaxy here
-        cur_reality = GALAXY_EISSENTAM
+        # cur_reality = GALAXY_EISSENTAM
         
         _prepare_teleport(self.state,
                           random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
