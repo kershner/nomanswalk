@@ -74,6 +74,14 @@ class Config:
 
     CLIP_POST_DELAY_MINUTES = 120
 
+    USE_COMMAND_QUEUE = False
+
+    FORCED_QUEUE_COMMANDS = {
+        "teleport",
+        "next_planet",
+        "coords",
+    }
+
     _params: Optional[dict] = None
 
     @classmethod
@@ -201,7 +209,7 @@ class NMSBot(commands.Bot):
 
         self._cmd_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
-        self._executing = False
+        self._active_command_tasks: set[asyncio.Task] = set()
 
         self._tokens = OAuthTokens(Config.get_client_id(), Config.get_client_secret(), Config.TOKENS_FILE)
         tokens = self._tokens.ensure_fresh()
@@ -241,6 +249,9 @@ class NMSBot(commands.Bot):
         name = parts[0].lower()
         args = parts[1:]
         return name, args
+
+    def _should_queue_command(self, name: str) -> bool:
+        return Config.USE_COMMAND_QUEUE or name in Config.FORCED_QUEUE_COMMANDS
 
     async def event_ready(self):
         log(f"Connected to Twitch as {self.nick}")
@@ -311,22 +322,30 @@ class NMSBot(commands.Bot):
         await ctx.send(text)
         await asyncio.sleep(Config.CHAT_DELAY)
 
+    async def _run_command(self, name: str, args: list[str]):
+        func = COMMANDS.get(name)
+        if not func:
+            log(f"Command worker: no func found for !{name}")
+            return
+
+        try:
+            log(f"Command worker: executing !{name} {args}")
+            await asyncio.to_thread(func.func, args)
+            log(f"Command worker: !{name} complete.")
+        except Exception as e:
+            log(f"Command failed: !{name} {args} ({e})")
+
+    async def _start_immediate_command(self, name: str, args: list[str]):
+        task = asyncio.create_task(self._run_command(name, args))
+        self._active_command_tasks.add(task)
+        task.add_done_callback(self._active_command_tasks.discard)
+
     async def _command_worker(self):
         while True:
             name, args = await self._cmd_queue.get()
-            log(f"Command worker: executing !{name} {args}")
-            self._executing = True
             try:
-                func = COMMANDS.get(name)
-                if func:
-                    await asyncio.to_thread(func.func, args)
-                    log(f"Command worker: !{name} complete.")
-                else:
-                    log(f"Command worker: no func found for !{name}")
-            except Exception as e:
-                log(f"Command failed: !{name} {args} ({e})")
+                await self._run_command(name, args)
             finally:
-                self._executing = False
                 self._cmd_queue.task_done()
 
             if name == "teleport":
@@ -351,11 +370,14 @@ class NMSBot(commands.Bot):
         await self._dispatch_nms_command(ctx, name, args)
     
     
-    async def _enqueue_command(self, ctx: commands.Context, name: str, args: list[str]):
-        was_busy = self._executing or (self._cmd_queue.qsize() > 0)
+    async def _enqueue_command(self, name: str, args: list[str]):
         await self._cmd_queue.put((name, args))
-        if was_busy:
-            pass
+
+    async def _submit_command(self, name: str, args: list[str]):
+        if self._should_queue_command(name):
+            await self._enqueue_command(name, args)
+        else:
+            await self._start_immediate_command(name, args)
 
     async def _refresh_loop(self):
         while True:
@@ -420,7 +442,7 @@ class NMSBot(commands.Bot):
             try:
                 if channel:
                     await self._say(channel, "Warping to a new planet...")
-                await self._cmd_queue.put(("teleport", []))
+                await self._submit_command("teleport", [])
             except Exception as e:
                 log(f"Teleport loop: failed to queue teleport: {e}")
 
@@ -527,7 +549,7 @@ class NMSBot(commands.Bot):
 
                 if passed:
                     await self._say(ctx, f"Vote passed! ({yes}-{no}) • {help_text}")
-                    await self._enqueue_command(ctx, name, args)
+                    await self._submit_command(name, args)
                 else:
                     await self._say(ctx, f"Vote failed! ({yes}-{no}) • {help_text}")
             finally:
@@ -666,7 +688,7 @@ class NMSBot(commands.Bot):
         await self._do_walk(ctx)
 
     async def _do_walk(self, ctx):
-        await self._enqueue_command(ctx, "walk", [])
+        await self._submit_command("walk", [])
 
     async def _dispatch_nms_command(self, ctx: commands.Context, name: str, args: list[str]):
         if name not in COMMANDS:
@@ -683,7 +705,7 @@ class NMSBot(commands.Bot):
             await self._start_vote(ctx, name, args)
             return
 
-        await self._enqueue_command(ctx, name, args)
+        await self._submit_command(name, args)
 
     async def event_command_error(self, ctx: commands.Context, error: Exception):
         if isinstance(error, CommandNotFound):
