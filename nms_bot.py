@@ -181,7 +181,11 @@ def _do_unstuck(timestamp):
         COMMANDS["right"].func(["100"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
-        log(f"STUCK: still stuck after right, trying tap_e")
+        log(f"STUCK: still stuck after right, trying dig + jet")
+        _dig_and_jet()
+        _stuck_last_cmd = "dig_jet"
+    elif _stuck_last_cmd == "dig_jet":
+        log(f"STUCK: still stuck after dig + jet, trying tap_e")
         COMMANDS["tap_e"].func()
         _stuck_last_cmd = "tap_e"
     else:  # None or "tap_e"
@@ -237,12 +241,17 @@ def right_mouse_click():
 # ---------------------------------------------------------------------------
 def jet(args=None):
     """Tap spacebar (jetpack burst)"""
-    send_key("space", 8)
+    send_key("space", 5)
 
 def dig(args=None):
     """Hold left click for 10 seconds"""
     left_click(10.0)
 
+def _dig_and_jet():
+    t = threading.Thread(target=COMMANDS["dig"].func, daemon=True)
+    t.start()
+    time.sleep(0.1)
+    COMMANDS["jet"].func()
 
 def walk(args=None):
     global _last_walk_t, _last_move_t, _last_xy
