@@ -273,18 +273,18 @@ class Teleporter(Mod):
 
     @on_key_pressed("o")
     def key_random_local(self):
-        """Random system + coords, stays in the current galaxy."""
-        cur_reality = _read_ga_int(GA_REALITY)
-        
+        """Random system + coords, random galaxy unless overridden."""
+        reality_idx = None
+
         # Override galaxy here
-        # cur_reality = GALAXY_EISSENTAM
-        
+        # reality_idx = GALAXY_EISSENTAM
+
         _prepare_teleport(self.state,
-                          random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                          random.randint(0, VOXEL_Y_MAX),
-                          random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                          random.randint(0, SYSTEM_MAX),
-                          reality_idx=cur_reality)
+                        random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                        random.randint(0, VOXEL_Y_MAX),
+                        random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                        random.randint(0, SYSTEM_MAX),
+                        reality_idx=reality_idx)
 
     @on_key_pressed("p")
     def key_random_galaxy(self):
