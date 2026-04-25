@@ -8,3 +8,4 @@ misc/
 MODS/
 *.log
 .nmspy_mods.py.cache/
+bsky_export/
