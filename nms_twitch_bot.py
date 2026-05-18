@@ -185,16 +185,14 @@ class VoteState:
     active: bool = False
     cmd_name: str = ""
     args_raw: str = ""
-    yes: set[str] = None
-    no: set[str] = None
+    votes: dict[str, str] = None
     task: Optional[asyncio.Task] = None
 
     def reset(self):
         self.active = False
         self.cmd_name = ""
         self.args_raw = ""
-        self.yes = set()
-        self.no = set()
+        self.votes = {}
         self.task = None
 
 
@@ -530,21 +528,28 @@ class NMSBot(commands.Bot):
         self._vote.active = True
         self._vote.cmd_name = name
         self._vote.args_raw = " ".join(args)
+        self._vote.votes = {}
 
         starter = (ctx.author.name or "").lower()
         if starter:
-            self._vote.yes.add(starter)
+            self._vote.votes[starter] = "yes"
 
         cmd = COMMANDS.get(name)
         help_text = f"{cmd.help}" if cmd and cmd.help else ""
-        await self._say(ctx, f"Vote started! {help_text} • Type !yes or !no • {Config.VOTING_DURATION} seconds • {self._tally()}")
+
+        await self._say(
+            ctx,
+            f"Vote started! {help_text} • Type !yes or !no • "
+            f"{Config.VOTING_DURATION} seconds • {self._tally()}"
+        )
 
         async def _finish():
             await asyncio.sleep(Config.VOTING_DURATION)
             try:
-                passed = len(self._vote.yes) > len(self._vote.no)
-                yes = len(self._vote.yes)
-                no = len(self._vote.no)
+                yes = sum(1 for vote in self._vote.votes.values() if vote == "yes")
+                no = sum(1 for vote in self._vote.votes.values() if vote == "no")
+                passed = yes > no
+
                 cmd = COMMANDS.get(name)
                 help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
@@ -558,31 +563,46 @@ class NMSBot(commands.Bot):
 
         self._vote.task = asyncio.create_task(_finish())
 
+
     def _tally(self) -> str:
-        return f"(Yes: {len(self._vote.yes)} | No: {len(self._vote.no)})"
+        yes = sum(1 for vote in self._vote.votes.values() if vote == "yes")
+        no = sum(1 for vote in self._vote.votes.values() if vote == "no")
+        return f"(Yes: {yes} | No: {no})"
+
 
     async def _cast_vote(self, ctx, message, side: str):
         if not self._vote.active:
             return
+
         user = ""
+
         try:
-            user = (message.author.name or "").lower()
+            user = (ctx.author.name or "").lower()
         except Exception:
             pass
+
         if not user:
             try:
-                user = (message.tags or {}).get("display-name", "").lower()
+                user = (message.author.name or "").lower()
             except Exception:
                 pass
+
         if not user:
+            try:
+                user = ((message.tags or {}).get("display-name") or "").lower()
+            except Exception:
+                pass
+
+        if not user:
+            await self._say(ctx, f"Could not count your !{side} vote.")
             return
-        if user in self._vote.yes or user in self._vote.no:
-            return
+
+        side = side.lower()
+        self._vote.votes[user] = side
+
         if side == "yes":
-            self._vote.yes.add(user)
             await self._say(ctx, f"{user} voted YES • {self._tally()}")
         else:
-            self._vote.no.add(user)
             await self._say(ctx, f"{user} voted NO • {self._tally()}")
 
     @commands.command(name="yes")
