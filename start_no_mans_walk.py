@@ -1,9 +1,10 @@
-from utils import BASE_DIR, focus_nms, log, send_key
-from nms_bot import PLANET_LOAD_SECONDS
+from utils import BASE_DIR, WINDOW_TITLE, focus_nms, log, send_key
+from nms_bot import PLANET_LOAD_SECONDS, STATE_FILE
 import obsws_python as obs
 import subprocess
 import pyautogui
 import argparse
+import win32gui
 import time
 import glob
 import sys
@@ -145,36 +146,104 @@ def set_nms_audio_device():
 # ─────────────────────────────────────────────────────────────
 # NMS helpers
 # ─────────────────────────────────────────────────────────────
+def get_processes_by_name(process_name):
+    import psutil
+
+    matches = []
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            if (proc.info["name"] or "").lower() == process_name.lower():
+                matches.append(proc)
+        except psutil.Error:
+            pass
+    return matches
+
+
+def nms_window_exists():
+    return bool(win32gui.FindWindow(None, WINDOW_TITLE))
+
+
+def kill_nms():
+    if is_process_running(NMS_EXE_NAME):
+        log("Killing existing/partial NMS.exe before retry...")
+        subprocess.run(
+            ["taskkill", "/F", "/IM", NMS_EXE_NAME],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(5)
+
+
+def wait_for_nms_ready(timeout):
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        procs = get_processes_by_name(NMS_EXE_NAME)
+
+        if procs and nms_window_exists():
+            pid = procs[0].pid
+            log(f"NMS.exe confirmed running with window (PID {pid}).")
+            return True
+
+        time.sleep(NMS_POLL_INTERVAL)
+
+    return False
+
+
+def wait_for_fresh_state(timeout=60):
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        try:
+            if os.path.exists(STATE_FILE):
+                age = time.time() - os.path.getmtime(STATE_FILE)
+                if age < 10:
+                    log("Fresh NMS state file confirmed.")
+                    return True
+        except OSError:
+            pass
+
+        time.sleep(2)
+
+    log("WARNING: NMS state file did not become fresh in time.")
+    return False
+
+
 def launch_nms_with_retry():
     """
-    Launch NMS via pymhf and block until NMS.exe appears in the process list.
-    Retries up to NMS_MAX_RETRIES times to handle Steam error 83.
-    Raises RuntimeError if the game never starts.
+    Launch NMS through pymhf and require both:
+    - NMS.exe is running
+    - the No Man's Sky window exists
+
+    Retries cleanly if Steam/pymhf fails to fully start the game.
     """
     for attempt in range(1, NMS_MAX_RETRIES + 1):
         log(f"Launching NMS (attempt {attempt}/{NMS_MAX_RETRIES})...")
-        proc = subprocess.Popen(
+
+        kill_nms()
+
+        launcher_proc = subprocess.Popen(
             [os.path.join("venv", "Scripts", "pymhf.exe"), "run", "nmspy"],
             cwd=BASE_DIR,
         )
 
-        deadline = time.time() + NMS_LAUNCH_TIMEOUT
-        while time.time() < deadline:
-            if is_process_running(NMS_EXE_NAME):
-                log(f"NMS.exe confirmed running (PID {proc.pid}).")
-                return proc
-            time.sleep(NMS_POLL_INTERVAL)
+        if wait_for_nms_ready(NMS_LAUNCH_TIMEOUT):
+            return launcher_proc
 
-        # NMS.exe never appeared — kill the launcher and try again
-        log(f"NMS.exe did not appear within {NMS_LAUNCH_TIMEOUT}s "
-            f"(possible Steam error 83). Terminating launcher and retrying...")
-        proc.terminate()
+        log(
+            f"NMS did not fully start within {NMS_LAUNCH_TIMEOUT}s. "
+            "Terminating launcher and retrying..."
+        )
+
         try:
-            proc.wait(timeout=5)
+            launcher_proc.terminate()
+            launcher_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            launcher_proc.kill()
 
-    raise RuntimeError(f"NMS failed to launch after {NMS_MAX_RETRIES} attempts.")
+        kill_nms()
+
+    raise RuntimeError(f"NMS failed to fully launch after {NMS_MAX_RETRIES} attempts.")
 
 
 def teleport_to_new_planet():
@@ -210,7 +279,7 @@ def main():
         time.sleep(10)  # let OBS fully settle before NMS creates its DX context
 
     nmspy_proc = launch_nms_with_retry()
-    log(f"NMS process started (PID {nmspy_proc.pid})")
+    log("NMS launch confirmed.")
 
     log(f"Waiting {WAIT_FOR_MODE_SELECT}s...")
     time.sleep(WAIT_FOR_MODE_SELECT)
@@ -220,6 +289,8 @@ def main():
 
     log(f"Waiting {WAIT_FOR_GAME_LOAD}s for game load...")
     time.sleep(WAIT_FOR_GAME_LOAD)
+
+    wait_for_fresh_state(timeout=60)
 
     log("Disabling HUD via hud_toggle mod...")
     send_key("f5", 0.1)
