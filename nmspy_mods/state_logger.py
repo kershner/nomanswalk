@@ -16,6 +16,7 @@
 # ///
 
 import ctypes
+import math
 import time
 import traceback
 
@@ -41,6 +42,11 @@ from shared_state import (
 _slog = _make_logger("StateDetector", "nms_state_logger.log")
 
 DEFAULT_POLL_INTERVAL = 5.0
+
+_live_player_ptr = None
+_live_player_addr = 0
+_live_player_update_count = 0
+
 
 # ---------------------------------------------------------------------------
 # Galaxy name table (reality index → name)
@@ -332,26 +338,105 @@ def _get_mp_data_addr():
         return 0
 
 
-def _read_player_position_from_sim():
+def _valid_float(v: float, limit: float = 100_000_000.0) -> bool:
+    return math.isfinite(float(v)) and abs(float(v)) < limit
+
+
+def _vector_looks_valid(vec) -> bool:
     try:
-        player = gameData.player
-        if player is None:
+        return all(_valid_float(v) for v in (vec.x, vec.y, vec.z))
+    except Exception:
+        return False
+
+
+def _matrix_looks_valid(mat) -> bool:
+    try:
+        vals = (
+            float(mat.pos.x),
+            float(mat.pos.y),
+            float(mat.pos.z),
+            float(mat.at.x),
+            float(mat.at.y),
+            float(mat.at.z),
+        )
+        if not all(_valid_float(v) for v in vals):
+            return False
+
+        pos_nonzero = any(abs(v) > 0.001 for v in vals[:3])
+        dir_nonzero = any(abs(v) > 0.001 for v in vals[3:])
+        return pos_nonzero and dir_nonzero
+    except Exception:
+        return False
+
+
+def _round_pos(pos):
+    return {
+        "x": round(float(pos.x), 3),
+        "y": round(float(pos.y), 3),
+        "z": round(float(pos.z), 3),
+    }
+
+
+def _get_live_player():
+    global _live_player_ptr
+
+    try:
+        if not _live_player_ptr:
             return None
-        mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
-        pos = mat.pos
-        x, y, z = float(pos.x), float(pos.y), float(pos.z)
-        if not all(abs(v) < 100_000_000 for v in (x, y, z)):
-            return None
-        return {
-            "x": round(x, 3),
-            "y": round(y, 3),
-            "z": round(z, 3),
-        }
+        return _live_player_ptr.contents
     except Exception:
         return None
 
 
+def _read_player_position_from_environment(env=None):
+    try:
+        if env is None:
+            env = gameData.player_environment
+        if env is None:
+            return None
+
+        mat = env.mPlayerTM
+        if not _matrix_looks_valid(mat):
+            return None
+
+        return _round_pos(mat.pos)
+    except Exception:
+        return None
+
+
+def _read_player_position_from_live_player():
+    try:
+        player = _get_live_player()
+        if player is None:
+            return None
+
+        mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
+        if not _matrix_looks_valid(mat):
+            return None
+
+        return _round_pos(mat.pos)
+    except Exception:
+        return None
+
+
+def _read_player_position_from_sim():
+    # Prefer cGcPlayerEnvironment.mPlayerTM. It is the NMS.py-exposed player
+    # environment transform and avoids stale gameData.player/mRootNode reads.
+    pos = _read_player_position_from_environment()
+    if pos is not None:
+        return pos
+
+    # Fallback only: use the live cGcPlayer.Update pointer captured by the mod.
+    return _read_player_position_from_live_player()
+
 def _get_player_state_ptr():
+    try:
+        ps = gameData.player_state
+        if ps is not None:
+            return ctypes.pointer(ps)
+    except Exception:
+        pass
+
     try:
         mp = _get_mp_data_addr()
         if not mp:
@@ -361,6 +446,23 @@ def _get_player_state_ptr():
     except Exception:
         return None
 
+
+def _get_player_state():
+    try:
+        ps = gameData.player_state
+        if ps is not None:
+            return ps
+    except Exception:
+        pass
+
+    try:
+        ps_ptr = _get_player_state_ptr()
+        if ps_ptr is not None:
+            return ps_ptr.contents
+    except Exception:
+        pass
+
+    return None
 
 def _normalize_planet_index(raw_idx, planet_ptrs=None):
     if raw_idx is None:
@@ -378,37 +480,43 @@ def _normalize_planet_index(raw_idx, planet_ptrs=None):
 
 def _read_raw_ga_values():
     try:
-        ps_ptr = _get_player_state_ptr()
-        if ps_ptr is None:
+        ps = _get_player_state()
+        if ps is None:
             return None
 
-        ps_addr = ctypes.cast(ps_ptr, ctypes.c_void_p).value
-        if not ps_addr:
-            return None
-
-        ga = ps_addr + GA_ADDR_OFFSET
-
-        # Current assumed layout:
-        # PlanetIndex(0x0), SolarSystemIndex(0x4),
-        # VoxelX(0x8), VoxelY(0xC), VoxelZ(0x10), RealityIndex(0x14)
-        raw_pi = ctypes.c_int32.from_address(ga + 0x0).value
-        si = ctypes.c_int32.from_address(ga + 0x4).value
-        vx = ctypes.c_int32.from_address(ga + 0x8).value
-        vy = ctypes.c_int32.from_address(ga + 0xC).value
-        vz = ctypes.c_int32.from_address(ga + 0x10).value
-        ri = ctypes.c_int32.from_address(ga + 0x14).value
+        loc = ps.mLocation
+        ga = loc.GalacticAddress
 
         return {
-            "raw_planet_index": raw_pi,
-            "solar_system_index": si,
-            "voxel_x": vx,
-            "voxel_y": vy,
-            "voxel_z": vz,
-            "reality_index": ri,
+            "raw_planet_index": int(ga.PlanetIndex),
+            "solar_system_index": int(ga.SolarSystemIndex),
+            "voxel_x": int(ga.VoxelX),
+            "voxel_y": int(ga.VoxelY),
+            "voxel_z": int(ga.VoxelZ),
+            "reality_index": int(loc.RealityIndex),
         }
     except Exception:
-        return None
+        try:
+            ps_ptr = _get_player_state_ptr()
+            if ps_ptr is None:
+                return None
 
+            ps_addr = ctypes.cast(ps_ptr, ctypes.c_void_p).value
+            if not ps_addr:
+                return None
+
+            ga = ps_addr + GA_ADDR_OFFSET
+
+            return {
+                "raw_planet_index": ctypes.c_int32.from_address(ga + 0x0).value,
+                "solar_system_index": ctypes.c_int32.from_address(ga + 0x4).value,
+                "voxel_x": ctypes.c_int32.from_address(ga + 0x8).value,
+                "voxel_y": ctypes.c_int32.from_address(ga + 0xC).value,
+                "voxel_z": ctypes.c_int32.from_address(ga + 0x10).value,
+                "reality_index": ctypes.c_int32.from_address(ga + 0x14).value,
+            }
+        except Exception:
+            return None
 
 def _read_planet_index_raw():
     vals = _read_raw_ga_values()
@@ -420,9 +528,28 @@ def _read_planet_index_raw():
     return -1
 
 
-def _read_planet_index():
-    return _normalize_planet_index(_read_planet_index_raw())
+def _read_planet_index_from_environment(env=None):
+    try:
+        if env is None:
+            env = gameData.player_environment
+        if env is None:
+            return -1
 
+        idx = int(env.miNearestPlanetIndex)
+        if 0 <= idx <= 5:
+            return idx
+    except Exception:
+        pass
+
+    return -1
+
+
+def _read_planet_index():
+    env_idx = _read_planet_index_from_environment()
+    if 0 <= env_idx <= 5:
+        return env_idx
+
+    return _normalize_planet_index(_read_planet_index_raw())
 
 # ===========================================================================
 # Payload builders
@@ -430,13 +557,14 @@ def _read_planet_index():
 
 def _gather_player_data(current_state):
     try:
-        ps_ptr = _get_player_state_ptr()
-        if ps_ptr is None:
+        ps = _get_player_state()
+        if ps is None:
             return {}
-        ps = ps_ptr.contents
+
         health = int(ps.miHealth)
         if not (0 <= health < 50_000_000):
             return {}
+
         result = {
             "name": _str(ps.mNameWithTitle),
             "health": health,
@@ -452,18 +580,23 @@ def _gather_player_data(current_state):
         _slog.warning("_gather_player_data failed: %s", traceback.format_exc())
         return {}
 
-
 def _gather_player_movement():
     try:
-        p = gameData.player
+        p = _get_live_player()
         if p is None:
             return {}
+
         stamina = float(p.mfStamina)
+        jetpack = float(p.mfJetpackTank)
+
         if not (0.0 <= stamina <= 1_000_000.0):
             return {}
+        if not (-1_000_000.0 <= jetpack <= 1_000_000.0):
+            return {}
+
         return {
             "stamina": round(stamina, 3),
-            "jetpack_tank": round(float(p.mfJetpackTank), 3),
+            "jetpack_tank": round(jetpack, 3),
             "is_running": bool(p.mbIsRunning),
             "is_auto_walking": bool(p.mbIsAutoWalking),
             "is_dying": bool(p.mbIsDying),
@@ -472,7 +605,6 @@ def _gather_player_movement():
         _slog.warning("_gather_player_movement failed: %s", traceback.format_exc())
         return {}
 
-
 def _gather_universe_address():
     try:
         vals = _read_raw_ga_values()
@@ -480,7 +612,8 @@ def _gather_universe_address():
             return {}
 
         raw_pi = vals["raw_planet_index"]
-        pi = _normalize_planet_index(raw_pi)
+        env_pi = _read_planet_index_from_environment()
+        pi = env_pi if 0 <= env_pi <= 5 else _normalize_planet_index(raw_pi)
         si = vals["solar_system_index"]
         vx = vals["voxel_x"]
         vy = vals["voxel_y"]
@@ -515,21 +648,33 @@ def _gather_environment_data(env=None):
     try:
         result = {}
 
-        pos = _read_player_position_from_sim()
+        if env is None:
+            try:
+                env = gameData.player_environment
+            except Exception:
+                env = None
+
+        pos = _read_player_position_from_environment(env)
+        if pos is None:
+            pos = _read_player_position_from_live_player()
         if pos is not None:
             result["player_position"] = pos
 
-        raw_idx = _read_planet_index_raw()
-        idx = _normalize_planet_index(raw_idx)
-        if 0 <= idx <= 5:
-            result["nearest_planet_index"] = idx
-            result["nearest_planet_index_raw"] = raw_idx
+        env_idx = _read_planet_index_from_environment(env)
+        if 0 <= env_idx <= 5:
+            result["nearest_planet_index"] = env_idx
+            result["nearest_planet_index_source"] = "player_environment"
+        else:
+            raw_idx = _read_planet_index_raw()
+            idx = _normalize_planet_index(raw_idx)
+            if 0 <= idx <= 5:
+                result["nearest_planet_index"] = idx
+                result["nearest_planet_index_raw"] = raw_idx
+                result["nearest_planet_index_source"] = "player_state_location"
 
         if env is None:
             return result
 
-        # These enum reads appear shifted in the current build.
-        # Keep them best-effort only.
         try:
             loc = _read_enum32(env.meLocation)
             name = _enum_name(EnvironmentLocation.Enum, loc)
@@ -567,7 +712,6 @@ def _gather_environment_data(env=None):
     except Exception:
         _slog.warning("_gather_environment_data failed: %s", traceback.format_exc())
         return {}
-
 
 def _gather_planet_data(planet_ptr):
     try:
@@ -669,15 +813,14 @@ def _find_standing_planet(planet_ptrs: dict) -> int:
 
 def _choose_planet_index(env_data, standing_idx=-1):
     ua = _gather_universe_address()
-    ga_idx = ua.get("planet_index", -1)
     env_idx = env_data.get("nearest_planet_index", -1)
+    ga_idx = ua.get("planet_index", -1)
 
-    idx = standing_idx if standing_idx >= 0 else ga_idx
-    if idx < 0:
-        idx = env_idx
-
-    return idx, ua
-
+    if 0 <= env_idx <= 5:
+        return env_idx, ua
+    if standing_idx >= 0:
+        return standing_idx, ua
+    return ga_idx, ua
 
 def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
     idx, ua = _choose_planet_index(env_data, standing_idx)
@@ -700,7 +843,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.0"
+    __version__ = "1.1-robust-sources"
 
     state = NMSModState()
 
@@ -788,8 +931,44 @@ class StateLogger(Mod):
         except Exception:
             _slog.warning("_cache_planet source=%s failed: %s", source, traceback.format_exc())
 
+    @nms.cGcPlayer.Update.before
+    def on_player_update(self, this, lfStep):
+        global _live_player_ptr, _live_player_addr, _live_player_update_count
+
+        try:
+            player = this.contents
+            mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
+            if not _matrix_looks_valid(mat):
+                return
+
+            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
+            if not addr:
+                return
+
+            if _live_player_addr and addr != _live_player_addr:
+                existing = _get_live_player()
+                if existing is not None:
+                    try:
+                        existing_mat = GetNodeAbsoluteTransMatrix(existing.mRootNode)
+                        if _matrix_looks_valid(existing_mat):
+                            return
+                    except Exception:
+                        pass
+
+            _live_player_ptr = this
+            _live_player_addr = addr
+            _live_player_update_count += 1
+        except Exception:
+            pass
+
     @on_fully_booted
     def on_game_booted(self):
+        global _live_player_ptr, _live_player_addr, _live_player_update_count
+
+        _live_player_ptr = None
+        _live_player_addr = 0
+        _live_player_update_count = 0
+
         self.state.current = ""
         self.state.last_location_stable = -1
         self._last_write_time = 0.0
@@ -824,19 +1003,9 @@ class StateLogger(Mod):
 
             pe = gameData.player_environment
             if pe is not None:
-                raw_idx = _read_planet_index_raw()
-                idx = _normalize_planet_index(raw_idx)
-                if 0 <= idx <= 5:
-                    self._last_env_data["nearest_planet_index_raw"] = raw_idx
-                    self._last_env_data["nearest_planet_index"] = idx
-
                 env_data = _gather_environment_data(pe)
-                if "player_position" in self._last_env_data:
+                if "player_position" in self._last_env_data and "player_position" not in env_data:
                     env_data["player_position"] = self._last_env_data["player_position"]
-                if "nearest_planet_index" in self._last_env_data:
-                    env_data["nearest_planet_index"] = self._last_env_data["nearest_planet_index"]
-                if "nearest_planet_index_raw" in self._last_env_data:
-                    env_data["nearest_planet_index_raw"] = self._last_env_data["nearest_planet_index_raw"]
                 self._last_env_data = env_data
 
                 try:

@@ -18,134 +18,205 @@
 import ctypes
 import logging
 import os
-import time
+import traceback
 
 from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed
 from pymhf.gui.decorators import BOOLEAN
 
 from nmspy.common import gameData
-from nmspy.decorators import on_fully_booted
+
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_toggle.log")
 
-def _build_file_logger() -> logging.Logger:
-    flog = logging.getLogger("HUDToggle.file")
-    flog.setLevel(logging.DEBUG)
-    flog.propagate = False
-    if not flog.handlers:
-        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="w")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
-        flog.addHandler(fh)
-    return flog
-
-_flog = _build_file_logger()
-
-logger = logging.getLogger("HUDToggle")
-
-# Offset of HUDHidden within cGcUserSettingsData (bool, 1 byte).
-# This is the same flag the in-game Options > General > HUD menu writes.
+_STRUCT_SIZE = 0x3AB0
+_APP_DATA_SIZE = 0x92AB10
 _HUD_HIDDEN_OFFSET = 0x3A8C
 
-# Size of cGcUserSettingsData. The game keeps two copies back-to-back
-# (double-buffered current + backup), so we write to both.
-_STRUCT_SIZE = 0x3AB0
 
-_APP_DATA_SIZE = 0x864D60
+def _build_file_logger() -> logging.Logger:
+    log = logging.getLogger("HUDToggle.file")
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
 
-# Exact field values used to locate cGcUserSettingsData within cGcApplication.Data.
-# These must match your current in-game settings — update if needed:
-#   Language:        0=English, 1=French, 2=Italian, 3=German, 4=Spanish, ...
-#   PlayerVoice:     0=Off, 1=High, 2=Low, 3=Alien
-#   SuitVoice:       0=Off, 1=High, 2=Low
-#   TemperatureUnit: 0=Invalid, 1=Celsius, 2=Fahrenheit, 3=Kelvin
-_FINGERPRINT = [
-    (0x3A08, 0),  # Language        = English
-    (0x3A38, 0),  # PlayerVoice     = Low
-    (0x3A58, 0),  # SuitVoice       = Off
-    (0x3A5C, 2),  # TemperatureUnit = Fahrenheit
-]
+    if not log.handlers:
+        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="w")
+        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
+        log.addHandler(fh)
+
+    return log
+
+
+_flog = _build_file_logger()
+logger = logging.getLogger("HUDToggle")
+
+_flog.info("=== hud_toggle.py loaded ===")
+
+
+def _u8(addr: int) -> int:
+    return ctypes.c_uint8.from_address(addr).value
+
+
+def _i32(addr: int) -> int:
+    return ctypes.c_int32.from_address(addr).value
+
+
+def _u32(addr: int) -> int:
+    return ctypes.c_uint32.from_address(addr).value
+
+
+def _u64(addr: int) -> int:
+    return ctypes.c_uint64.from_address(addr).value
+
+
+def _valid_array(addr: int) -> bool:
+    ptr = _u64(addr)
+    size = _u32(addr + 0x08)
+    flag = _u8(addr + 0x0C)
+
+    if flag not in (0, 1):
+        return False
+
+    if size > 100_000:
+        return False
+
+    if ptr == 0:
+        return size == 0
+
+    return 0x10000 <= ptr <= 0x00007FFFFFFFFFFF
+
+
+def _looks_like_settings(addr: int) -> bool:
+    try:
+        nonempty_arrays = 0
+
+        for off in range(0x00, 0x100, 0x10):
+            if not _valid_array(addr + off):
+                return False
+
+            if _u64(addr + off) != 0 and _u32(addr + off + 0x08) > 0:
+                nonempty_arrays += 1
+
+        if nonempty_arrays < 2:
+            return False
+
+        ranges = [
+            (0x39C4, 0, 2),
+            (0x39CC, 0, 1),
+            (0x3A00, 0, 1),
+            (0x3A08, 0, 20),
+            (0x3A2C, 0, 1),
+            (0x3A38, 0, 3),
+            (0x3A54, 0, 2),
+            (0x3A58, 0, 2),
+            (0x3A5C, 0, 3),
+            (0x3A64, 0, 1),
+            (0x3A68, 0, 3),
+        ]
+
+        for off, low, high in ranges:
+            val = _i32(addr + off)
+            if val < low or val > high:
+                return False
+
+        for off in range(0x3A7C, 0x3AA3):
+            if _u8(addr + off) not in (0, 1):
+                return False
+
+        return True
+
+    except Exception:
+        return False
 
 
 def _find_settings(mpdata_addr: int) -> list[int]:
-    """Scan cGcApplication.Data for copies of cGcUserSettingsData using field fingerprinting."""
     hits = []
-    i = 0
-    try:
-        while i < _APP_DATA_SIZE - _STRUCT_SIZE:
-            if all(
-                ctypes.c_int32.from_address(mpdata_addr + i + off).value == val
-                for off, val in _FINGERPRINT
-            ):
-                hits.append(mpdata_addr + i)
-            i += 16
-    except Exception as exc:
-        _flog.error(f"_find_settings scan error at offset 0x{i:X}: {exc!r}")
+
+    for off in range(0, _APP_DATA_SIZE - _STRUCT_SIZE, 0x10):
+        addr = mpdata_addr + off
+
+        if _looks_like_settings(addr):
+            hits.append(addr)
+
     return hits
 
 
 class HUDToggle(Mod):
     __author__ = "Tyler Kershner"
-    __description__ = "HUD Toggle"
-    __version__ = "1.0"
+    __description__ = "Toggle HUDHidden with F5."
+    __version__ = "2.5"
 
     def __init__(self):
         super().__init__()
-        self._hud_hidden: bool = False
-        self._settings_addrs: list[int] = []
-        # _flog.info("=== hud_toggle loaded ===")
-        self._try_init()
+        self._hud_hidden = False
+        self._settings_addrs = []
+        _flog.info("HUDToggle mod instantiated")
 
-    def _try_init(self):
+    def _init_settings(self) -> bool:
         if self._settings_addrs:
-            return
+            return True
+
         try:
             app = gameData.GcApplication
+            _flog.info("GcApplication=%r", app)
+
             if not app or not app.mpData:
-                return
+                _flog.info("app/mpData not ready")
+                return False
+
             mpdata_addr = ctypes.addressof(app.mpData.contents)
+            _flog.info("mpData=0x%X; scanning for settings", mpdata_addr)
+
             hits = _find_settings(mpdata_addr)
+
             if not hits:
-                _flog.error(
-                    "cGcUserSettingsData not found — update _FINGERPRINT to match your settings."
-                )
-                return
+                _flog.error("no cGcUserSettingsData candidates found")
+                return False
+
             self._settings_addrs = hits
-            self._hud_hidden = bool(
-                ctypes.c_uint8.from_address(hits[0] + _HUD_HIDDEN_OFFSET).value
+            self._hud_hidden = bool(_u8(hits[0] + _HUD_HIDDEN_OFFSET))
+
+            _flog.info(
+                "found %s candidate(s): %s",
+                len(hits),
+                ", ".join(f"0x{x:X}" for x in hits),
             )
-            # _flog.info(f"Ready. Found {len(hits)} settings instance(s). HUDHidden={self._hud_hidden}")
-        except Exception as exc:
-            _flog.error(f"_try_init failed: {exc!r}")
+            _flog.info("current HUDHidden=%s", self._hud_hidden)
 
-    @on_fully_booted
-    def on_booted(self):
-        self._try_init()
+            return True
 
-    # ── Core toggle ───────────────────────────────────────────────────────────
+        except Exception:
+            _flog.error("_init_settings failed")
+            _flog.error(traceback.format_exc())
+            return False
 
-    def _apply(self, new_state: bool, source: str) -> None:
-        if not self._settings_addrs:
-            self._try_init()
-        if not self._settings_addrs:
-            _flog.error(f"[{source}] Settings not found — cannot toggle HUD")
+    def _apply(self, hidden: bool, source: str) -> None:
+        if not self._init_settings():
+            _flog.error("[%s] settings unavailable; cannot toggle", source)
             return
+
         try:
             for addr in self._settings_addrs:
-                ctypes.c_uint8.from_address(addr + _HUD_HIDDEN_OFFSET).value = int(new_state)
-            self._hud_hidden = new_state
-            logger.info(f"[{source}] HUD -> {'HIDDEN' if new_state else 'VISIBLE'}")
-            # _flog.info(f"[{source}] HUD -> {'HIDDEN' if new_state else 'VISIBLE'}")
-        except Exception as exc:
-            _flog.error(f"[{source}] toggle failed: {exc!r}")
+                before = _u8(addr + _HUD_HIDDEN_OFFSET)
+                ctypes.c_uint8.from_address(addr + _HUD_HIDDEN_OFFSET).value = int(hidden)
+                after = _u8(addr + _HUD_HIDDEN_OFFSET)
 
-    # ── Key binding ───────────────────────────────────────────────────────────
+                _flog.info("[%s] 0x%X HUDHidden %s -> %s", source, addr, before, after)
+
+            self._hud_hidden = hidden
+
+            msg = f"[{source}] HUD -> {'HIDDEN' if hidden else 'VISIBLE'}"
+            logger.info(msg)
+            _flog.info(msg)
+
+        except Exception:
+            _flog.error("[%s] toggle failed", source)
+            _flog.error(traceback.format_exc())
 
     @on_key_pressed("f5")
     def toggle_hud(self) -> None:
+        _flog.info("[F5] key hook fired; current hidden=%s", self._hud_hidden)
         self._apply(not self._hud_hidden, "F5")
-
-    # ── GUI toggle ────────────────────────────────────────────────────────────
 
     @property
     @BOOLEAN("HUD hidden:")
