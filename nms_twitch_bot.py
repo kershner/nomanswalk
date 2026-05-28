@@ -73,7 +73,7 @@ class Config:
         "back", 
     ]
 
-    CLIP_POST_DELAY_MINUTES = 120
+    CLIP_POST_DELAY_MINUTES = 240
 
     USE_COMMAND_QUEUE = False
 
