@@ -47,6 +47,14 @@ _live_player_ptr = None
 _live_player_addr = 0
 _live_player_update_count = 0
 
+_live_env_ptr = None
+_live_env_addr = 0
+_live_env_update_count = 0
+
+_live_game_state_ptr = None
+_live_game_state_addr = 0
+_live_game_state_update_count = 0
+
 
 # ---------------------------------------------------------------------------
 # Galaxy name table (reality index → name)
@@ -317,36 +325,9 @@ def galaxy_name(idx: int) -> str:
     """Return the galaxy name for a reality index, or a fallback string."""
     return GALAXY_NAMES.get(idx, f"Galaxy-{idx}")
 
-# ---------------------------------------------------------------------------
-# Raw-memory offsets
-# ---------------------------------------------------------------------------
-
-# mGameState offset within cGcApplication.Data
-GAMESTATE_OFFSET = 0x10F0
-
-# cGcPlayerState + mLocation / GalacticAddress base
-GA_ADDR_OFFSET = 0x180
-
-
-def _get_mp_data_addr():
-    try:
-        app = gameData.GcApplication
-        if app is None:
-            return 0
-        return ctypes.cast(app.mpData, ctypes.c_void_p).value or 0
-    except Exception:
-        return 0
-
 
 def _valid_float(v: float, limit: float = 100_000_000.0) -> bool:
     return math.isfinite(float(v)) and abs(float(v)) < limit
-
-
-def _vector_looks_valid(vec) -> bool:
-    try:
-        return all(_valid_float(v) for v in (vec.x, vec.y, vec.z))
-    except Exception:
-        return False
 
 
 def _matrix_looks_valid(mat) -> bool:
@@ -359,12 +340,15 @@ def _matrix_looks_valid(mat) -> bool:
             float(mat.at.y),
             float(mat.at.z),
         )
+
         if not all(_valid_float(v) for v in vals):
             return False
 
         pos_nonzero = any(abs(v) > 0.001 for v in vals[:3])
         dir_nonzero = any(abs(v) > 0.001 for v in vals[3:])
+
         return pos_nonzero and dir_nonzero
+
     except Exception:
         return False
 
@@ -378,12 +362,50 @@ def _round_pos(pos):
 
 
 def _get_live_player():
-    global _live_player_ptr
+    try:
+        if _live_player_ptr:
+            return _live_player_ptr.contents
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_live_environment():
+    try:
+        if _live_env_ptr:
+            return _live_env_ptr.contents
+    except Exception:
+        pass
 
     try:
-        if not _live_player_ptr:
-            return None
-        return _live_player_ptr.contents
+        return gameData.player_environment
+    except Exception:
+        return None
+
+
+def _get_live_game_state():
+    try:
+        if _live_game_state_ptr:
+            return _live_game_state_ptr.contents
+    except Exception:
+        pass
+
+    try:
+        return gameData.game_state
+    except Exception:
+        return None
+
+
+def _get_player_state():
+    try:
+        if _live_game_state_ptr:
+            return _live_game_state_ptr.contents.mPlayerState
+    except Exception:
+        pass
+
+    try:
+        return gameData.player_state
     except Exception:
         return None
 
@@ -391,15 +413,18 @@ def _get_live_player():
 def _read_player_position_from_environment(env=None):
     try:
         if env is None:
-            env = gameData.player_environment
+            env = _get_live_environment()
+
         if env is None:
             return None
 
         mat = env.mPlayerTM
+
         if not _matrix_looks_valid(mat):
             return None
 
         return _round_pos(mat.pos)
+
     except Exception:
         return None
 
@@ -407,80 +432,49 @@ def _read_player_position_from_environment(env=None):
 def _read_player_position_from_live_player():
     try:
         player = _get_live_player()
+
         if player is None:
             return None
 
         mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
+
         if not _matrix_looks_valid(mat):
             return None
 
         return _round_pos(mat.pos)
+
     except Exception:
         return None
 
 
 def _read_player_position_from_sim():
-    # Prefer cGcPlayerEnvironment.mPlayerTM. It is the NMS.py-exposed player
-    # environment transform and avoids stale gameData.player/mRootNode reads.
     pos = _read_player_position_from_environment()
+
     if pos is not None:
         return pos
 
-    # Fallback only: use the live cGcPlayer.Update pointer captured by the mod.
     return _read_player_position_from_live_player()
 
-def _get_player_state_ptr():
-    try:
-        ps = gameData.player_state
-        if ps is not None:
-            return ctypes.pointer(ps)
-    except Exception:
-        pass
 
-    try:
-        mp = _get_mp_data_addr()
-        if not mp:
-            return None
-        addr = mp + GAMESTATE_OFFSET + 0xAAD0
-        return ctypes.cast(addr, ctypes.POINTER(nms.cGcPlayerState))
-    except Exception:
-        return None
-
-
-def _get_player_state():
-    try:
-        ps = gameData.player_state
-        if ps is not None:
-            return ps
-    except Exception:
-        pass
-
-    try:
-        ps_ptr = _get_player_state_ptr()
-        if ps_ptr is not None:
-            return ps_ptr.contents
-    except Exception:
-        pass
-
-    return None
-
-def _normalize_planet_index(raw_idx, planet_ptrs=None):
+def _normalize_planet_index(raw_idx):
     if raw_idx is None:
         return -1
-    if not (0 <= raw_idx <= 5):
+
+    try:
+        idx = int(raw_idx)
+    except Exception:
         return -1
 
-    # Current post-update behavior appears to report the active planet one too high:
-    normalized = raw_idx - 1
-    if 0 <= normalized <= 5:
-        return normalized
+    if 0 <= idx <= 5:
+        return idx
 
-    return raw_idx
+    return -1
 
 
 def _read_raw_ga_values():
     try:
         ps = _get_player_state()
+
         if ps is None:
             return None
 
@@ -494,74 +488,56 @@ def _read_raw_ga_values():
             "voxel_y": int(ga.VoxelY),
             "voxel_z": int(ga.VoxelZ),
             "reality_index": int(loc.RealityIndex),
+            "source": "live_game_state.mPlayerState.mLocation",
         }
+
     except Exception:
-        try:
-            ps_ptr = _get_player_state_ptr()
-            if ps_ptr is None:
-                return None
+        _slog.warning("_read_raw_ga_values failed: %s", traceback.format_exc())
+        return None
 
-            ps_addr = ctypes.cast(ps_ptr, ctypes.c_void_p).value
-            if not ps_addr:
-                return None
-
-            ga = ps_addr + GA_ADDR_OFFSET
-
-            return {
-                "raw_planet_index": ctypes.c_int32.from_address(ga + 0x0).value,
-                "solar_system_index": ctypes.c_int32.from_address(ga + 0x4).value,
-                "voxel_x": ctypes.c_int32.from_address(ga + 0x8).value,
-                "voxel_y": ctypes.c_int32.from_address(ga + 0xC).value,
-                "voxel_z": ctypes.c_int32.from_address(ga + 0x10).value,
-                "reality_index": ctypes.c_int32.from_address(ga + 0x14).value,
-            }
-        except Exception:
-            return None
 
 def _read_planet_index_raw():
     vals = _read_raw_ga_values()
+
     if not vals:
         return -1
+
     raw = vals["raw_planet_index"]
+
     if 0 <= raw <= 5:
         return raw
+
     return -1
 
 
 def _read_planet_index_from_environment(env=None):
     try:
         if env is None:
-            env = gameData.player_environment
+            env = _get_live_environment()
+
         if env is None:
             return -1
 
         idx = int(env.miNearestPlanetIndex)
+
         if 0 <= idx <= 5:
             return idx
+
     except Exception:
         pass
 
     return -1
 
 
-def _read_planet_index():
-    env_idx = _read_planet_index_from_environment()
-    if 0 <= env_idx <= 5:
-        return env_idx
-
-    return _normalize_planet_index(_read_planet_index_raw())
-
-# ===========================================================================
-# Payload builders
-# ===========================================================================
-
 def _gather_player_data(current_state):
     try:
         ps = _get_player_state()
+
         if ps is None:
             return {}
 
         health = int(ps.miHealth)
+
         if not (0 <= health < 50_000_000):
             return {}
 
@@ -573,16 +549,21 @@ def _gather_player_data(current_state):
             "nanites": int(ps.muNanites),
             "quicksilver": int(ps.muSpecials),
         }
+
         if current_state == "IN_COCKPIT":
             result["ship_health"] = max(0, int(ps.miShipHealth))
+
         return result
+
     except Exception:
         _slog.warning("_gather_player_data failed: %s", traceback.format_exc())
         return {}
 
+
 def _gather_player_movement():
     try:
         p = _get_live_player()
+
         if p is None:
             return {}
 
@@ -591,6 +572,7 @@ def _gather_player_movement():
 
         if not (0.0 <= stamina <= 1_000_000.0):
             return {}
+
         if not (-1_000_000.0 <= jetpack <= 1_000_000.0):
             return {}
 
@@ -601,19 +583,23 @@ def _gather_player_movement():
             "is_auto_walking": bool(p.mbIsAutoWalking),
             "is_dying": bool(p.mbIsDying),
         }
+
     except Exception:
         _slog.warning("_gather_player_movement failed: %s", traceback.format_exc())
         return {}
 
+
 def _gather_universe_address():
     try:
         vals = _read_raw_ga_values()
+
         if not vals:
             return {}
 
         raw_pi = vals["raw_planet_index"]
         env_pi = _read_planet_index_from_environment()
         pi = env_pi if 0 <= env_pi <= 5 else _normalize_planet_index(raw_pi)
+
         si = vals["solar_system_index"]
         vx = vals["voxel_x"]
         vy = vals["voxel_y"]
@@ -626,7 +612,18 @@ def _gather_universe_address():
             and abs(vy) <= 5000
             and 0 <= si < 800
             and 0 <= raw_pi <= 5
+            and 0 <= ri <= 255
         ):
+            _slog.warning(
+                "rejecting universe address source=%s pi=%s si=%s voxel=(%s,%s,%s) reality=%s",
+                vals.get("source"),
+                raw_pi,
+                si,
+                vx,
+                vy,
+                vz,
+                ri,
+            )
             return {}
 
         return {
@@ -637,8 +634,11 @@ def _gather_universe_address():
             "planet_index": pi,
             "planet_index_raw": raw_pi,
             "reality_index": ri,
+            "galaxy_number": ri + 1,
             "galaxy_name": galaxy_name(ri),
+            "source": vals.get("source", "unknown"),
         }
+
     except Exception:
         _slog.warning("_gather_universe_address failed: %s", traceback.format_exc())
         return {}
@@ -649,24 +649,27 @@ def _gather_environment_data(env=None):
         result = {}
 
         if env is None:
-            try:
-                env = gameData.player_environment
-            except Exception:
-                env = None
+            env = _get_live_environment()
 
         pos = _read_player_position_from_environment(env)
+
         if pos is None:
             pos = _read_player_position_from_live_player()
+
         if pos is not None:
             result["player_position"] = pos
 
         env_idx = _read_planet_index_from_environment(env)
+
         if 0 <= env_idx <= 5:
             result["nearest_planet_index"] = env_idx
+            result["nearest_planet_index_raw"] = env_idx
             result["nearest_planet_index_source"] = "player_environment"
+
         else:
             raw_idx = _read_planet_index_raw()
             idx = _normalize_planet_index(raw_idx)
+
             if 0 <= idx <= 5:
                 result["nearest_planet_index"] = idx
                 result["nearest_planet_index_raw"] = raw_idx
@@ -675,43 +678,60 @@ def _gather_environment_data(env=None):
         if env is None:
             return result
 
+        loc_val = None
+        stable_val = None
+
         try:
-            loc = _read_enum32(env.meLocation)
-            name = _enum_name(EnvironmentLocation.Enum, loc)
-            if name and name != str(loc):
+            loc_val = _read_enum32(env.meLocation)
+            result["location_raw"] = loc_val
+            name = _enum_name(EnvironmentLocation.Enum, loc_val)
+
+            if name and name != str(loc_val):
                 result["location"] = name
-            else:
-                result["location_raw"] = loc
+
         except Exception:
             pass
 
         try:
-            loc_stable = _read_enum32(env.meLocationStable)
-            name = _enum_name(EnvironmentLocation.Enum, loc_stable)
-            if name and name != str(loc_stable):
+            stable_val = _read_enum32(env.meLocationStable)
+            result["location_stable_raw"] = stable_val
+            name = _enum_name(EnvironmentLocation.Enum, stable_val)
+
+            if name and name != str(stable_val):
                 result["location_stable"] = name
-            else:
-                result["location_stable_raw"] = loc_stable
+
         except Exception:
             pass
+
+        try:
+            result["is_in_cave"] = (
+                loc_val == int(EnvironmentLocation.Enum.Cave)
+                or stable_val == int(EnvironmentLocation.Enum.Cave)
+            )
+        except Exception:
+            result["is_in_cave"] = False
 
         try:
             result["distance_from_planet"] = round(float(env.mfDistanceFromPlanet), 2)
         except Exception:
             pass
+
         try:
             result["nearest_planet_sealevel"] = round(float(env.mfNearestPlanetSealevel), 2)
         except Exception:
             pass
+
         try:
             result["inside_atmosphere"] = bool(env.mbInsidePlanetAtmosphere)
         except Exception:
             pass
 
         return result
+
     except Exception:
         _slog.warning("_gather_environment_data failed: %s", traceback.format_exc())
         return {}
+
 
 def _gather_planet_data(planet_ptr):
     try:
@@ -725,6 +745,7 @@ def _gather_planet_data(planet_ptr):
         weather_data = pd.Weather
         hazard = pd.Hazard
         name = _str(pd.Name)
+
         if not name or not name.isprintable():
             return {}
 
@@ -748,12 +769,24 @@ def _gather_planet_data(planet_ptr):
             "fauna_label": _str(info.Fauna),
             "resources_label": _str(info.Resources),
             "is_extreme_weather": bool(info.IsWeatherExtreme),
-            "weather_type": _enum_name(weather_data.WeatherType.__class__, _read_enum32(weather_data.WeatherType)),
-            "weather_intensity": _enum_name(weather_data.WeatherIntensity.__class__, _read_enum32(weather_data.WeatherIntensity)),
-            "storm_frequency": _enum_name(weather_data.StormFrequency.__class__, _read_enum32(weather_data.StormFrequency)),
+            "weather_type": _enum_name(
+                weather_data.WeatherType.__class__,
+                _read_enum32(weather_data.WeatherType),
+            ),
+            "weather_intensity": _enum_name(
+                weather_data.WeatherIntensity.__class__,
+                _read_enum32(weather_data.WeatherIntensity),
+            ),
+            "storm_frequency": _enum_name(
+                weather_data.StormFrequency.__class__,
+                _read_enum32(weather_data.StormFrequency),
+            ),
             "creature_life": _enum_name(pd.CreatureLife.__class__, _read_enum32(pd.CreatureLife)),
             "life": _enum_name(pd.Life.__class__, _read_enum32(pd.Life)),
-            "inhabiting_race": _enum_name(pd.InhabitingRace.__class__, _read_enum32(pd.InhabitingRace)),
+            "inhabiting_race": _enum_name(
+                pd.InhabitingRace.__class__,
+                _read_enum32(pd.InhabitingRace),
+            ),
             "sentinel_level": _enum_name(
                 pd.GroundCombatDataPerDifficulty[0].SentinelLevel.__class__,
                 _read_enum32(pd.GroundCombatDataPerDifficulty[0].SentinelLevel),
@@ -773,6 +806,7 @@ def _gather_planet_data(planet_ptr):
             "in_abandoned_system": bool(pd.InAbandonedSystem),
             "in_empty_system": bool(pd.InEmptySystem),
         }
+
     except Exception:
         _slog.warning("_gather_planet_data failed: %s", traceback.format_exc())
         return {}
@@ -782,8 +816,13 @@ def _gather_solar_system_data(planet_ptr):
     try:
         if not planet_ptr:
             return {}
+
         pgid = planet_ptr.contents.mPlanetGenerationInputData
-        return {"star_type": _enum_name(pgid.Star.__class__, _read_enum32(pgid.Star))}
+
+        return {
+            "star_type": _enum_name(pgid.Star.__class__, _read_enum32(pgid.Star)),
+        }
+
     except Exception:
         _slog.warning("_gather_solar_system_data failed: %s", traceback.format_exc())
         return {}
@@ -792,22 +831,31 @@ def _gather_solar_system_data(planet_ptr):
 def _find_standing_planet(planet_ptrs: dict) -> int:
     best_idx = -1
     best_radius = 0.0
+
     for idx, ptr in planet_ptrs.items():
         try:
             name = _str(ptr.contents.mPlanetData.Name)
+
             if not name:
                 continue
+
             addr = ctypes.cast(ptr, ctypes.c_void_p).value
+
             if not addr:
                 continue
-            r = ctypes.c_float.from_address(addr + 0x3BB0).value
-            if r > best_radius:
-                best_radius = r
+
+            radius = ctypes.c_float.from_address(addr + 0x3BB0).value
+
+            if radius > best_radius:
+                best_radius = radius
                 best_idx = idx
+
         except Exception:
             pass
+
     if best_radius > 10.0:
         return best_idx
+
     return -1
 
 
@@ -818,9 +866,12 @@ def _choose_planet_index(env_data, standing_idx=-1):
 
     if 0 <= env_idx <= 5:
         return env_idx, ua
+
     if standing_idx >= 0:
         return standing_idx, ua
+
     return ga_idx, ua
+
 
 def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
     idx, ua = _choose_planet_index(env_data, standing_idx)
@@ -843,7 +894,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.1-robust-sources"
+    __version__ = "1.3-authoritative-location"
 
     state = NMSModState()
 
@@ -882,26 +933,42 @@ class StateLogger(Mod):
         env_idx = self._last_env_data.get("nearest_planet_index", -1)
 
         _slog.info(
-            "PLANET_SELECT terrain_idx=%s standing_idx=%s ga_raw_idx=%s ga_idx=%s env_raw_idx=%s env_idx=%s cached=%s",
+            "PLANET_SELECT terrain_idx=%s standing_idx=%s ga_raw_idx=%s ga_idx=%s "
+            "reality=%s galaxy=%s source=%s env_raw_idx=%s env_idx=%s cached=%s "
+            "live_env_updates=%s live_game_state_updates=%s live_player_updates=%s "
+            "location=%s location_stable=%s is_in_cave=%s",
             terrain_idx,
             self._standing_planet_idx,
             ga_raw_idx,
             ga_idx,
+            ga.get("reality_index"),
+            ga.get("galaxy_name"),
+            ga.get("source"),
             env_raw_idx,
             env_idx,
             sorted(self._planet_ptrs.keys()),
+            _live_env_update_count,
+            _live_game_state_update_count,
+            _live_player_update_count,
+            self._last_env_data.get("location_raw"),
+            self._last_env_data.get("location_stable_raw"),
+            self._last_env_data.get("is_in_cave"),
         )
 
-        _write_state(_build_full_payload(
-            self.state.current or "UNKNOWN",
-            self._last_env_data,
-            self._planet_ptrs,
-            self._standing_planet_idx,
-        ))
+        _write_state(
+            _build_full_payload(
+                self.state.current or "UNKNOWN",
+                self._last_env_data,
+                self._planet_ptrs,
+                self._standing_planet_idx,
+            )
+        )
+
         self._last_write_time = time.time()
 
     def _restore_from_location(self):
         loc = self.state.last_location_stable
+
         if loc in (EnvironmentLocation.Enum.PlanetInShip, EnvironmentLocation.Enum.Default):
             self.current_state = "IN_COCKPIT"
         else:
@@ -920,6 +987,7 @@ class StateLogger(Mod):
                     self._planet_ptrs.clear()
 
                 existing = self._planet_ptrs.get(idx)
+
                 if existing is not None:
                     try:
                         if _str(existing.contents.mPlanetData.Name):
@@ -928,8 +996,54 @@ class StateLogger(Mod):
                         pass
 
             self._planet_ptrs[idx] = this
+
         except Exception:
             _slog.warning("_cache_planet source=%s failed: %s", source, traceback.format_exc())
+
+    @nms.cGcGameState.Update.before
+    def on_game_state_update(self, this, lfTimeStep):
+        global _live_game_state_ptr, _live_game_state_addr, _live_game_state_update_count
+
+        try:
+            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
+
+            if not addr:
+                return
+
+            _live_game_state_ptr = this
+            _live_game_state_addr = addr
+            _live_game_state_update_count += 1
+
+        except Exception:
+            pass
+
+    @nms.cGcPlayerEnvironment.Update.before
+    def on_player_environment_update(self, this, lfTimeStep):
+        global _live_env_ptr, _live_env_addr, _live_env_update_count
+
+        try:
+            env = this.contents
+            mat = env.mPlayerTM
+
+            if not _matrix_looks_valid(mat):
+                return
+
+            idx = int(env.miNearestPlanetIndex)
+
+            if not (-1 <= idx <= 5):
+                return
+
+            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
+
+            if not addr:
+                return
+
+            _live_env_ptr = this
+            _live_env_addr = addr
+            _live_env_update_count += 1
+
+        except Exception:
+            pass
 
     @nms.cGcPlayer.Update.before
     def on_player_update(self, this, lfStep):
@@ -938,36 +1052,52 @@ class StateLogger(Mod):
         try:
             player = this.contents
             mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
+
             if not _matrix_looks_valid(mat):
                 return
 
             addr = ctypes.cast(this, ctypes.c_void_p).value or 0
+
             if not addr:
                 return
 
             if _live_player_addr and addr != _live_player_addr:
                 existing = _get_live_player()
+
                 if existing is not None:
                     try:
                         existing_mat = GetNodeAbsoluteTransMatrix(existing.mRootNode)
+
                         if _matrix_looks_valid(existing_mat):
                             return
+
                     except Exception:
                         pass
 
             _live_player_ptr = this
             _live_player_addr = addr
             _live_player_update_count += 1
+
         except Exception:
             pass
 
     @on_fully_booted
     def on_game_booted(self):
         global _live_player_ptr, _live_player_addr, _live_player_update_count
+        global _live_env_ptr, _live_env_addr, _live_env_update_count
+        global _live_game_state_ptr, _live_game_state_addr, _live_game_state_update_count
 
         _live_player_ptr = None
         _live_player_addr = 0
         _live_player_update_count = 0
+
+        _live_env_ptr = None
+        _live_env_addr = 0
+        _live_env_update_count = 0
+
+        _live_game_state_ptr = None
+        _live_game_state_addr = 0
+        _live_game_state_update_count = 0
 
         self.state.current = ""
         self.state.last_location_stable = -1
@@ -998,25 +1128,35 @@ class StateLogger(Mod):
     def on_main_loop(self, this):
         try:
             pos = _read_player_position_from_sim()
+
             if pos is not None:
                 self._last_env_data["player_position"] = pos
 
-            pe = gameData.player_environment
+            pe = _get_live_environment()
+
             if pe is not None:
                 env_data = _gather_environment_data(pe)
+
                 if "player_position" in self._last_env_data and "player_position" not in env_data:
                     env_data["player_position"] = self._last_env_data["player_position"]
+
                 self._last_env_data = env_data
 
                 try:
                     loc_stable = _read_enum32(pe.meLocationStable)
+
                     if loc_stable != self.state.last_location_stable:
                         self.state.last_location_stable = loc_stable
                         self.state.in_galaxy_map = False
-                        if loc_stable in (EnvironmentLocation.Enum.PlanetInShip, EnvironmentLocation.Enum.Default):
+
+                        if loc_stable in (
+                            EnvironmentLocation.Enum.PlanetInShip,
+                            EnvironmentLocation.Enum.Default,
+                        ):
                             self.current_state = "IN_COCKPIT"
                         else:
                             self.current_state = "ON_FOOT"
+
                 except Exception:
                     pass
 
