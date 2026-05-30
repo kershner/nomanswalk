@@ -390,7 +390,7 @@ class Command:
 COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
     "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=("d",)),
-    "sky":     Command(sky,     "Press Y to trigger the sky-drop mod.",  hidden=True),
+    "sky":     Command(sky,     "Drop the Walker from a large height."),
     "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
