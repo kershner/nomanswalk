@@ -72,7 +72,12 @@ class Config:
         "back", 
     ]
 
-    CLIP_POST_DELAY_MINUTES = 240
+    # Edit this list to control when Bluesky posts happen each day.
+    BLUESKY_POST_TZ = "US/Eastern"
+    BLUESKY_POST_TIMES = [
+        "12:00",  # 12pm / noon
+        "19:00",  # 7pm
+    ]
 
     USE_COMMAND_QUEUE = False
 
@@ -214,7 +219,7 @@ class NMSBot(commands.Bot):
         self._access_token = str(tokens.get("access_token") or "").strip()
 
         self._bsky = None
-        self._clip_task: Optional[asyncio.Task] = None
+        self._bluesky_post_task: Optional[asyncio.Task] = None
 
         self._teleport_interval_s = 5 * 3600  # 5 hours
         self._next_teleport_time: float = time.time() + self._teleport_interval_s
@@ -270,8 +275,9 @@ class NMSBot(commands.Bot):
             self._shutdown_loop_task = asyncio.create_task(self._nightly_shutdown_loop())
             log("Nightly shutdown loop started.")
 
-        if self._bsky and self._clip_task is None:
-            self._clip_task = asyncio.create_task(self._delayed_clip_post())
+        if self._bsky and self._bluesky_post_task is None:
+            self._bluesky_post_task = asyncio.create_task(self._fixed_bluesky_post_loop())
+            log("Bluesky scheduler: fixed-time post loop started.")
 
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
@@ -444,14 +450,6 @@ class NMSBot(commands.Bot):
             except Exception as e:
                 log(f"Teleport loop: failed to queue teleport: {e}")
 
-            # Reset the Bluesky clip countdown so the post reflects the new planet.
-            if self._bsky:
-                if self._clip_task and not self._clip_task.done():
-                    self._clip_task.cancel()
-                    log("Clip scheduler: cancelled previous clip task after teleport.")
-                self._clip_task = asyncio.create_task(self._delayed_clip_post())
-                log(f"Clip scheduler: restarted {Config.CLIP_POST_DELAY_MINUTES}-minute countdown after teleport.")
-
             self._next_teleport_time += self._teleport_interval_s
 
     async def _nightly_shutdown_loop(self):
@@ -504,20 +502,46 @@ class NMSBot(commands.Bot):
 
             await asyncio.sleep(60)
 
-    async def _delayed_clip_post(self):
-        delay_s = Config.CLIP_POST_DELAY_MINUTES * 60
-        log(f"Clip scheduler: posting in {Config.CLIP_POST_DELAY_MINUTES} minutes.")
-        await asyncio.sleep(delay_s)
+    def _next_bluesky_post_time(self):
+        """Return the next configured Bluesky post time."""
+        tz = pytz.timezone(Config.BLUESKY_POST_TZ)
+        now = datetime.now(tz)
+        next_times = []
 
-        if not self._bsky:
-            log("Clip scheduler: no Bluesky client.")
+        for post_time in Config.BLUESKY_POST_TIMES:
+            hour, minute = map(int, str(post_time).split(":", 1))
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(days=1)
+            next_times.append(candidate)
+
+        return min(next_times)
+
+    async def _fixed_bluesky_post_loop(self):
+        if not Config.BLUESKY_POST_TIMES:
+            log("Bluesky scheduler: no post times configured.")
             return
 
-        try:
-            await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, countdown=self._format_countdown())
-            log("Clip scheduler: post_clip() complete.")
-        except Exception as e:
-            log(f"Clip scheduler failed: {e}")
+        log(
+            "Bluesky scheduler: fixed post times are "
+            f"{', '.join(Config.BLUESKY_POST_TIMES)} {Config.BLUESKY_POST_TZ}."
+        )
+
+        while True:
+            next_post = self._next_bluesky_post_time()
+            sleep_s = max(0.0, (next_post - datetime.now(next_post.tzinfo)).total_seconds())
+            log(f"Bluesky scheduler: next post at {next_post:%Y-%m-%d %H:%M %Z}.")
+            await asyncio.sleep(sleep_s)
+
+            if not self._bsky:
+                log("Bluesky scheduler: no Bluesky client.")
+                continue
+
+            try:
+                await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, countdown=self._format_countdown())
+                log("Bluesky scheduler: post_clip() complete.")
+            except Exception as e:
+                log(f"Bluesky scheduler failed: {e}")
 
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
         if self._vote.active:
