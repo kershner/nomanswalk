@@ -346,6 +346,22 @@ def music(args=None):
     """Toggle the music by sending the "m" key.  Handled by the music_toggle mod"""
     send_key("m", 0.1)
 
+
+def day(args=None):
+    """Set the in-game time to day. Handled by the time_of_day mod."""
+    send_key("f6", 0.1)
+
+
+def night(args=None):
+    """Set the in-game time to night. Handled by the time_of_day mod."""
+    send_key("f7", 0.1)
+
+
+def resume_time(args=None):
+    """Resume the game's normal planet time. Handled by the time_of_day mod."""
+    send_key("f8", 0.1)
+
+
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
@@ -405,6 +421,9 @@ COMMANDS: dict[str, Command] = {
     "teleport": Command(teleport, "Teleport to a random planet.", hidden=True),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "music": Command(music, "Toggle music on/off."),
+    "day": Command(day, "Set the planet to daytime."),
+    "night": Command(night, "Set the planet to nighttime."),
+    "resume_time": Command(resume_time, "Resume the game's normal planet time."),
 }
 
 # Expand aliases into COMMANDS so lookups work transparently.
