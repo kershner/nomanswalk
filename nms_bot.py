@@ -362,6 +362,11 @@ def resume_time(args=None):
     send_key("f8", 0.1)
 
 
+
+def storm(args=None):
+    """Toggle forced storm weather. Handled by the storm_toggle mod."""
+    send_key("f9", 0.1)
+
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
@@ -424,6 +429,7 @@ COMMANDS: dict[str, Command] = {
     "day": Command(day, "Set the planet to daytime."),
     "night": Command(night, "Set the planet to nighttime."),
     "resume_time": Command(resume_time, "Resume the game's normal planet time."),
+    "storm": Command(storm, "Toggle forced storm weather on/off."),
 }
 
 # Expand aliases into COMMANDS so lookups work transparently.
