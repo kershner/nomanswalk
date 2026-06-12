@@ -63,6 +63,21 @@ class Config:
         "music"
     }
 
+    COMMAND_FEEDBACK = {
+        "walk": "Autowalk toggled.",
+        "w": "Autowalk toggled.",
+        "stop": "Autowalk stopped.",
+        "s": "Autowalk stopped.",
+        "camera": "Camera toggled.",
+        "coords": "Showing planet coordinates for 10 seconds.",
+        "music": "Music toggled.",
+        "day": "Daytime forced. Use !resume_time to return to the normal planet cycle.",
+        "night": "Nighttime forced. Use !resume_time to return to the normal planet cycle.",
+        "resume_time": "Normal planet time resumed.",
+        "storm": "Storm toggled. Weather should shift shortly.",
+        "gravity": "Low gravity toggled.",
+    }
+
     PARAM_GUARD_CMDS = [
         "up", 
         "down", 
@@ -289,7 +304,7 @@ class NMSBot(commands.Bot):
             await asyncio.to_thread(left_click)
             await asyncio.sleep(0.3)
 
-            await self._do_walk(channel)
+            await self._do_walk(channel, announce=False)
             log("Startup sequence: complete.")
 
     async def event_message(self, message):
@@ -579,6 +594,9 @@ class NMSBot(commands.Bot):
                 if passed:
                     await self._say(ctx, f"Vote passed! ({yes}-{no}) • {help_text}")
                     await self._submit_command(name, args)
+                    feedback = Config.COMMAND_FEEDBACK.get(name)
+                    if feedback:
+                        await self._say(ctx, feedback)
                 else:
                     await self._say(ctx, f"Vote failed! ({yes}-{no}) • {help_text}")
             finally:
@@ -731,8 +749,10 @@ class NMSBot(commands.Bot):
     async def cmd_walk(self, ctx: commands.Context):
         await self._do_walk(ctx)
 
-    async def _do_walk(self, ctx):
+    async def _do_walk(self, ctx, announce=True):
         await self._submit_command("walk", [])
+        if announce:
+            await self._say(ctx, Config.COMMAND_FEEDBACK["walk"])
 
     async def _dispatch_nms_command(self, ctx: commands.Context, name: str, args: list[str]):
         if name not in COMMANDS:
@@ -750,6 +770,10 @@ class NMSBot(commands.Bot):
             return
 
         await self._submit_command(name, args)
+
+        feedback = Config.COMMAND_FEEDBACK.get(name)
+        if feedback:
+            await self._say(ctx, feedback)
 
     async def event_command_error(self, ctx: commands.Context, error: Exception):
         if isinstance(error, CommandNotFound):
