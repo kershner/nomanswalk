@@ -236,7 +236,7 @@ class NMSBot(commands.Bot):
         self._bsky = None
         self._bluesky_post_task: Optional[asyncio.Task] = None
 
-        self._teleport_interval_s = 5 * 3600  # 5 hours
+        self._teleport_interval_s = 4 * 3600  # 4 hours
         self._next_teleport_time: float = time.time() + self._teleport_interval_s
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
@@ -760,6 +760,30 @@ class NMSBot(commands.Bot):
 
         if name in Config.ADMIN_ONLY_COMMANDS and not self._is_admin(ctx.author.name):
             return
+
+        if name == "teleport" and args:
+            address = args[0].strip().upper() if len(args) in (1, 2) else ""
+            valid_address = (
+                len(address) == 12
+                and address[0] in "123456"
+                and all(c in "0123456789ABCDEF" for c in address)
+            )
+            valid_galaxy = True
+            if len(args) == 2:
+                try:
+                    galaxy = int(args[1])
+                    valid_galaxy = 1 <= galaxy <= 255
+                except ValueError:
+                    valid_galaxy = False
+
+            if not valid_address or not valid_galaxy:
+                await self._say(
+                    ctx,
+                    "Usage: !teleport <12-character planet address> [galaxy 1-255], e.g. !teleport 415AFC31FC03 10",
+                )
+                return
+
+            args = [address] + ([str(galaxy)] if len(args) == 2 else [])
 
         if is_planet_loading():
             await self._say(ctx, "Planet loading — please wait before sending commands.")

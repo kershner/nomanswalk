@@ -16,6 +16,8 @@
 # ///
 
 import ctypes
+import json
+import os
 import random
 import time
 import traceback
@@ -48,6 +50,8 @@ VOXEL_Y_MAX = 255
 SYSTEM_MAX = 599
 SAFE_PLANET_INDEX = 0
 LOAD_TIMEOUT_S = 25.0
+PORTAL_SYSTEM_MAX = 0x2FF
+TELEPORT_REQUEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teleport_request.json")
 
 
 _tlog = _make_logger("Teleporter", "random_teleporter.log")
@@ -140,6 +144,44 @@ def _write_location(vx, vy, vz, sys_idx, planet_idx, reality_idx):
         return False
 
 
+
+def _signed_portal_coord(value, bits):
+    sign_bit = 1 << (bits - 1)
+    return value - (1 << bits) if value & sign_bit else value
+
+
+def _decode_portal_address(address):
+    address = str(address).strip().upper()
+
+    if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
+        raise ValueError("invalid 12-character portal address")
+
+    return {
+        "planet": int(address[0], 16) - 1,
+        "system": int(address[1:4], 16),
+        "voxel_y": _signed_portal_coord(int(address[4:6], 16), 8),
+        "voxel_z": _signed_portal_coord(int(address[6:9], 16), 12),
+        "voxel_x": _signed_portal_coord(int(address[9:12], 16), 12),
+    }
+
+
+def _read_teleport_request():
+    try:
+        with open(TELEPORT_REQUEST_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        address = payload.get("address", "")
+        destination = _decode_portal_address(address)
+        reality_idx = payload.get("reality")
+        if reality_idx is not None:
+            reality_idx = int(reality_idx)
+            if not GALAXY_MIN <= reality_idx <= GALAXY_MAX:
+                raise ValueError("galaxy reality index must be from 0 to 254")
+        os.remove(TELEPORT_REQUEST_FILE)
+        return address.upper(), destination, reality_idx
+    except Exception:
+        _tlog.error("[ADDRESS] Could not read teleport request:\n%s", traceback.format_exc())
+        return None, None, None
+
 def _trigger_load(state) -> bool:
     global _fsm_state_str
 
@@ -176,6 +218,7 @@ def _prepare_teleport(
     sys_idx,
     planet_idx=SAFE_PLANET_INDEX,
     reality_idx=None,
+    system_max=SYSTEM_MAX,
 ):
     if state.loading:
         _tlog.warning(
@@ -198,7 +241,7 @@ def _prepare_teleport(
     vx = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, int(vx)))
     vy = max(-VOXEL_Y_MAX, min(VOXEL_Y_MAX, int(vy)))
     vz = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, int(vz)))
-    sys_idx = max(0, min(SYSTEM_MAX, int(sys_idx)))
+    sys_idx = max(0, min(system_max, int(sys_idx)))
     planet_idx = max(0, int(planet_idx))
     reality_idx = max(GALAXY_MIN, min(GALAXY_MAX, int(reality_idx)))
 
@@ -243,8 +286,8 @@ def _flush_deferred_teleport(state):
 
 class Teleporter(Mod):
     __author__ = "Tyler Kershner"
-    __description__ = "Random teleporter"
-    __version__ = "1.2-live-player-state"
+    __description__ = "Random and portal-address teleporter"
+    __version__ = "1.4-address-galaxy-teleport"
 
     state = NMSModState()
 
@@ -310,6 +353,32 @@ class Teleporter(Mod):
             random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
             random.randint(0, SYSTEM_MAX),
             reality_idx=reality_idx,
+        )
+
+
+    @on_key_pressed("i")
+    def key_address(self):
+        address, destination, requested_reality = _read_teleport_request()
+
+        if destination is None:
+            return
+
+        cur = _read_location_dict()
+        if cur is None:
+            _tlog.error("[ADDRESS] Cannot read current galaxy for %s", address)
+            return
+
+        reality_idx = cur["reality"] if requested_reality is None else requested_reality
+        _tlog.info("[ADDRESS] %s -> reality=%d destination=%s", address, reality_idx, destination)
+        _prepare_teleport(
+            self.state,
+            destination["voxel_x"],
+            destination["voxel_y"],
+            destination["voxel_z"],
+            destination["system"],
+            planet_idx=destination["planet"],
+            reality_idx=reality_idx,
+            system_max=PORTAL_SYSTEM_MAX,
         )
 
     @on_key_pressed("p")

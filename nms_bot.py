@@ -13,7 +13,9 @@ import os
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nmspy_mods", "nms_state.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(BASE_DIR, "nmspy_mods", "nms_state.json")
+TELEPORT_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "teleport_request.json")
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
@@ -392,9 +394,50 @@ def _do_teleport(key, label):
         set_planet_loading(False)
 
 
+def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
+    if not args:
+        return None, None
+
+    if len(args) not in (1, 2):
+        raise ValueError("Use !teleport <address> [galaxy 1-255].")
+
+    address = str(args[0]).strip().upper()
+    if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
+        raise ValueError("Planet address must be 12 hexadecimal characters and start with 1-6.")
+
+    galaxy = None
+    if len(args) == 2:
+        try:
+            galaxy = int(args[1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Galaxy must be a number from 1 to 255.") from exc
+        if not 1 <= galaxy <= 255:
+            raise ValueError("Galaxy must be a number from 1 to 255.")
+
+    return address, galaxy
+
+
+def _write_teleport_request(address: str, galaxy: int | None = None) -> None:
+    payload = {"address": address}
+    if galaxy is not None:
+        payload["reality"] = galaxy - 1
+
+    temp_file = f"{TELEPORT_REQUEST_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    os.replace(temp_file, TELEPORT_REQUEST_FILE)
+
+
 def teleport(args=None):
-    """Send the 'O' key to trigger a random planet teleport, then wait for the planet to load."""
-    _do_teleport("o", "Teleport")
+    """Teleport to a portal address in an optional galaxy, or randomly when omitted."""
+    address, galaxy = _normalize_teleport_destination(args)
+
+    if address:
+        _write_teleport_request(address, galaxy)
+        galaxy_label = f" in galaxy {galaxy}" if galaxy is not None else ""
+        _do_teleport("i", f"Teleport {address}{galaxy_label}")
+    else:
+        _do_teleport("o", "Teleport")
 
 
 def next_planet(args=None):
@@ -428,7 +471,7 @@ COMMANDS: dict[str, Command] = {
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs.", hidden=True),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
-    "teleport": Command(teleport, "Teleport to a random planet.", hidden=True),
+    "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255].", hidden=True),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "music": Command(music, "Toggle music on/off."),
     "day": Command(day, "Set the planet to daytime."),
