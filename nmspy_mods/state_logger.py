@@ -37,6 +37,7 @@ from shared_state import (
     _enum_name,
     _str,
     _write_state,
+    get_mod_status,
 )
 
 _slog = _make_logger("StateDetector", "nms_state_logger.log")
@@ -888,6 +889,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
         "environment": env_copy,
         "planet": _gather_planet_data(planet_ptr) if planet_ptr else {},
         "solar_system": _gather_solar_system_data(planet_ptr) if planet_ptr else {},
+        "mods": get_mod_status(),
     }
 
 

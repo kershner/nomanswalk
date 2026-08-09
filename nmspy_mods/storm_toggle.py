@@ -6,6 +6,9 @@ from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed
 from nmspy.globals import globals
 
+import nmspy.data.types as nms
+from shared_state import set_mod_status
+
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storm_toggle.log")
 
@@ -67,19 +70,44 @@ class StormToggle(Mod):
             f"StormTransitionTime={self._read_sky('StormTransitionTime')}"
         )
 
+    def _apply_forced_storm(self) -> None:
+        self._write_debug_bool("DisableStorms", False)
+        self._write_debug_bool("ForceLoadAllWeather", True)
+        self._write_debug_bool("ForceExtremeWeather", True)
+        self._write_sky("ForceStormSetting", True)
+        self._write_sky("ForceStormStrength", 1.0)
+
+    def _reapply_forced_storm(self) -> None:
+        if self._forced_storm:
+            try:
+                self._apply_forced_storm()
+            except Exception:
+                _flog.error("failed to reapply forced storm")
+                _flog.error(traceback.format_exc())
+
+    @nms.cGcPlanet.Construct.after
+    def on_planet_construct(self, this, *args) -> None:
+        self._reapply_forced_storm()
+
+    @nms.cGcPlanet.Generate.after
+    def on_planet_generate(self, this, *args) -> None:
+        self._reapply_forced_storm()
+
+    @nms.cGcPlanet.SetupRegionMap.after
+    def on_region_map(self, this) -> None:
+        self._reapply_forced_storm()
+
+    @nms.cGcPlanet.UpdateWeather.after
+    def on_update_weather(self, this, lfTimeStep) -> None:
+        self._reapply_forced_storm()
+
     def _start_storm(self, source: str) -> None:
         try:
             before = self._snapshot()
 
-            self._write_debug_bool("DisableStorms", False)
-            self._write_debug_bool("ForceLoadAllWeather", True)
-            self._write_debug_bool("ForceExtremeWeather", True)
-
-            # These are more directly tied to active sky/storm rendering than
-            # GcDebugOptions alone. ForceStormStrength is a 0.0-1.0 storm blend.
-            self._write_sky("ForceStormSetting", True)
-            self._write_sky("ForceStormStrength", 1.0)
+            self._apply_forced_storm()
             self._forced_storm = True
+            set_mod_status("storm", "forced")
 
             msg = f"[{source}] forced storm ON: {before} -> {self._snapshot()}"
             logger.info(msg)
@@ -97,6 +125,7 @@ class StormToggle(Mod):
             self._write_debug_bool("ForceExtremeWeather", False)
             self._write_debug_bool("DisableStorms", True)
             self._forced_storm = False
+            set_mod_status("storm", "normal")
 
             msg = f"[{source}] forced storm OFF: {before} -> {self._snapshot()}"
             logger.info(msg)
@@ -108,11 +137,7 @@ class StormToggle(Mod):
     @on_key_pressed("f9")
     def toggle_storm(self) -> None:
         try:
-            force_setting = self._read_sky("ForceStormSetting")
-            force_strength = self._read_sky("ForceStormStrength")
-            currently_forced = bool(force_setting) or (isinstance(force_strength, float) and force_strength > 0.01)
-
-            if self._forced_storm or currently_forced:
+            if self._forced_storm:
                 self._stop_storm("F9")
             else:
                 self._start_storm("F9")

@@ -19,6 +19,7 @@ import traceback
 from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed
 from nmspy.globals import globals
+from shared_state import set_mod_status
 
 
 DAY_KEY = "f6"
@@ -65,6 +66,13 @@ class TimeOfDay(Mod):
             before = globals.GcDebugOptions.ForceTimeOfDay
             globals.GcDebugOptions.ForceTimeOfDay = float(value)
             after = globals.GcDebugOptions.ForceTimeOfDay
+
+            if value == DAY_TIME:
+                set_mod_status("time", "day")
+            elif value == NIGHT_TIME:
+                set_mod_status("time", "night")
+            else:
+                set_mod_status("time", "normal")
 
             msg = f"[{source}] ForceTimeOfDay {before} -> {after}"
             logger.info(msg)

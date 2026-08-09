@@ -127,7 +127,14 @@ def get_status_text(countdown: str = "") -> dict:
         fauna = planet.get("creature_life", "")
         fauna = f"Fauna: {fauna}" if fauna else ""
 
-        planet_stats = " • ".join(filter(None, [galaxy, size, rings, weather, flora, fauna]))
+        mods = state.get("mods", {})
+        gravity = f"Gravity: {mods.get('gravity', 'normal').title()}"
+        storm = f"Storm: {mods.get('storm', 'normal').title()}"
+        time_status = f"Time: {mods.get('time', 'normal').title()}"
+
+        planet_stats = " • ".join(filter(None, [
+            galaxy, size, rings, weather, flora, fauna, gravity, storm, time_status
+        ]))
 
         main_parts = [f"Walking across {name} ({biome})"]
         if countdown:

@@ -8,6 +8,7 @@ from pymhf import Mod, ModState
 from pymhf.core.hooking import on_key_pressed
 
 import nmspy.data.types as nms
+from shared_state import set_mod_status
 
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gravity_toggle.log")
@@ -66,6 +67,11 @@ class GravityToggle(Mod):
             _flog.error("failed while caching planet")
             _flog.error(traceback.format_exc())
 
+    @nms.cGcPlanet.UpdateGravity.before
+    def on_update_gravity(self, this: ctypes._Pointer[nms.cGcPlanet], lfNewGravityMultiplier: float):
+        if self.state.low_gravity_enabled:
+            return (this, LOW_GRAVITY_MULTIPLIER)
+
     def _apply_gravity(self, multiplier: float, source: str) -> None:
         try:
             if not self.state.planets:
@@ -87,5 +93,6 @@ class GravityToggle(Mod):
     @on_key_pressed("f10")
     def toggle_gravity(self) -> None:
         self.state.low_gravity_enabled = not self.state.low_gravity_enabled
+        set_mod_status("gravity", "low" if self.state.low_gravity_enabled else "normal")
         multiplier = LOW_GRAVITY_MULTIPLIER if self.state.low_gravity_enabled else NORMAL_GRAVITY_MULTIPLIER
         self._apply_gravity(multiplier, "F10")

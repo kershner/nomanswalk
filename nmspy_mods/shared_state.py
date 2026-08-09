@@ -8,6 +8,20 @@ from pymhf import ModState
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 
+_mod_status = {
+    "gravity": "normal",
+    "storm": "normal",
+    "time": "normal",
+}
+
+
+def set_mod_status(name: str, value: str) -> None:
+    _mod_status[name] = value
+
+
+def get_mod_status() -> dict:
+    return dict(_mod_status)
+
 
 def _make_logger(name, filename):
     log = logging.getLogger(name)
