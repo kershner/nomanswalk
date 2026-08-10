@@ -27,6 +27,7 @@ class Config:
 
     CHAT_DELAY = 1.5
     VOTING_DURATION = 20
+    TELEPORT_VOTING_DURATION = 60
 
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
@@ -53,14 +54,14 @@ class Config:
     ]
 
     ADMIN_ONLY_COMMANDS = {
-        "teleport",
         "next_planet",
     }
 
     VOTABLE_COMMANDS = {
         "camera",
         "coords",
-        "music"
+        "music",
+        "teleport",
     }
 
     COMMAND_FEEDBACK = {
@@ -225,6 +226,9 @@ class NMSBot(commands.Bot):
         self._vote = VoteState()
         self._vote.reset()
 
+        self._teleport_vote = VoteState()
+        self._teleport_vote.reset()
+
         self._cmd_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_command_tasks: set[asyncio.Task] = set()
@@ -316,9 +320,9 @@ class NMSBot(commands.Bot):
             name, args = self._parse_command(content)
             ctx = await self.get_context(message)
             if name == "yes":
-                await self._cast_vote(ctx, message, "yes")
+                await self._cast_vote(ctx, message, "yes", args[0] if args else "")
             elif name == "no":
-                await self._cast_vote(ctx, message, "no")
+                await self._cast_vote(ctx, message, "no", args[0] if args else "")
             elif name == "help":
                 await self._do_help(ctx, args)
             elif name == "status":
@@ -559,33 +563,63 @@ class NMSBot(commands.Bot):
                 log(f"Bluesky scheduler failed: {e}")
 
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
-        if self._vote.active:
-            await self._say(ctx, "Vote already in progress.")
+        is_teleport = name == "teleport"
+        vote = self._teleport_vote if is_teleport else self._vote
+        duration = Config.TELEPORT_VOTING_DURATION if is_teleport else Config.VOTING_DURATION
+
+        if vote.active:
+            await self._say(ctx, "Teleport vote already in progress." if is_teleport else "Vote already in progress.")
             return
 
-        self._vote.active = True
-        self._vote.cmd_name = name
-        self._vote.args_raw = " ".join(args)
-        self._vote.votes = {}
+        vote.active = True
+        vote.cmd_name = name
+        vote.args_raw = " ".join(args)
+        vote.votes = {}
 
         starter = (ctx.author.name or "").lower()
         if starter:
-            self._vote.votes[starter] = "yes"
+            vote.votes[starter] = "yes"
 
         cmd = COMMANDS.get(name)
         help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
-        await self._say(
-            ctx,
-            f"Vote started! {help_text} • Type !yes or !no • "
-            f"{Config.VOTING_DURATION} seconds • {self._tally()}"
-        )
+        if is_teleport:
+            if args:
+                galaxy = args[1] if len(args) > 1 else "current"
+                teleport_text = f"address {args[0]} • Galaxy: {galaxy}"
+            else:
+                teleport_text = "random planet"
+
+            await self._say(
+                ctx,
+                f"Teleport vote started! Destination: {teleport_text} • "
+                f"Vote with !yes teleport or !no teleport • "
+                f"{duration} seconds • {self._tally(vote)}"
+            )
+        else:
+            await self._say(
+                ctx,
+                f"Vote started! {help_text} • Type !yes or !no • "
+                f"{duration} seconds • {self._tally(vote)}"
+            )
 
         async def _finish():
-            await asyncio.sleep(Config.VOTING_DURATION)
+            if is_teleport:
+                await asyncio.sleep(duration / 2)
+                if vote.active:
+                    await self._say(
+                        ctx,
+                        f"Teleport vote halfway! Destination: {teleport_text} • "
+                        f"Vote with !yes teleport or !no teleport • "
+                        f"{duration // 2} seconds remaining • {self._tally(vote)}"
+                    )
+                await asyncio.sleep(duration / 2)
+            else:
+                await asyncio.sleep(duration)
+
             try:
-                yes = sum(1 for vote in self._vote.votes.values() if vote == "yes")
-                no = sum(1 for vote in self._vote.votes.values() if vote == "no")
+                yes = sum(1 for value in vote.votes.values() if value == "yes")
+                no = sum(1 for value in vote.votes.values() if value == "no")
                 passed = yes > no
 
                 cmd = COMMANDS.get(name)
@@ -600,19 +634,29 @@ class NMSBot(commands.Bot):
                 else:
                     await self._say(ctx, f"Vote failed! ({yes}-{no}) • {help_text}")
             finally:
-                self._vote.reset()
+                vote.reset()
 
-        self._vote.task = asyncio.create_task(_finish())
+        vote.task = asyncio.create_task(_finish())
 
-
-    def _tally(self) -> str:
-        yes = sum(1 for vote in self._vote.votes.values() if vote == "yes")
-        no = sum(1 for vote in self._vote.votes.values() if vote == "no")
+    def _tally(self, vote: VoteState = None) -> str:
+        vote = vote or self._vote
+        yes = sum(1 for value in vote.votes.values() if value == "yes")
+        no = sum(1 for value in vote.votes.values() if value == "no")
         return f"(Yes: {yes} | No: {no})"
 
+    async def _cast_vote(self, ctx, message, side: str, target: str = ""):
+        target = (target or "").lower().lstrip("!")
 
-    async def _cast_vote(self, ctx, message, side: str):
-        if not self._vote.active:
+        if target in {"teleport", "planet"}:
+            vote = self._teleport_vote
+            label = "Teleport "
+        elif self._vote.active:
+            vote = self._vote
+            label = ""
+        else:
+            return
+
+        if not vote.active:
             return
 
         user = ""
@@ -639,20 +683,20 @@ class NMSBot(commands.Bot):
             return
 
         side = side.lower()
-        self._vote.votes[user] = side
+        vote.votes[user] = side
 
         if side == "yes":
-            await self._say(ctx, f"{user} voted YES • {self._tally()}")
+            await self._say(ctx, f"{user} voted YES • {label}{self._tally(vote)}")
         else:
-            await self._say(ctx, f"{user} voted NO • {self._tally()}")
+            await self._say(ctx, f"{user} voted NO • {label}{self._tally(vote)}")
 
     @commands.command(name="yes")
-    async def cmd_yes(self, ctx: commands.Context):
-        await self._cast_vote(ctx, ctx.message, "yes")
+    async def cmd_yes(self, ctx: commands.Context, target: str = ""):
+        await self._cast_vote(ctx, ctx.message, "yes", target)
 
     @commands.command(name="no")
-    async def cmd_no(self, ctx: commands.Context):
-        await self._cast_vote(ctx, ctx.message, "no")
+    async def cmd_no(self, ctx: commands.Context, target: str = ""):
+        await self._cast_vote(ctx, ctx.message, "no", target)
 
     @commands.command(name="status")
     async def cmd_status(self, ctx: commands.Context):

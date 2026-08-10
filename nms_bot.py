@@ -471,7 +471,7 @@ COMMANDS: dict[str, Command] = {
     "camera":  Command(camera,  "Toggle third person camera."),
     "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs.", hidden=True),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
-    "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255].", hidden=True),
+    "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "music": Command(music, "Toggle music on/off."),
     "day": Command(day, "Set the planet to daytime."),
