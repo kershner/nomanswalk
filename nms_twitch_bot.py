@@ -69,6 +69,8 @@ class Config:
         "w": "Autowalk toggled.",
         "stop": "Autowalk stopped.",
         "s": "Autowalk stopped.",
+        "cruise": "Cruise toggled.",
+        "engage": "Cruise toggled.",
         "camera": "Camera toggled.",
         "coords": "Showing planet coordinates for 10 seconds.",
         "music": "Music toggled.",

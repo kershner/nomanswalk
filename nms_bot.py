@@ -44,7 +44,6 @@ BLOCKED_COMMANDS_BY_STATE = {
         "walk",
         "stop",
         "coords",
-        "teleport",
     },
 }
 
@@ -55,6 +54,7 @@ _last_move_t = 0.0
 _stuck = False
 _stuck_last_cmd = None
 _last_unstuck_t = 0.0
+_cruise_enabled = False
 
 # Planet-load lockout — set during teleport to pause stuck-checking and
 # block new commands in the Twitch bot.
@@ -118,6 +118,9 @@ def poll_state():
             ts = float(data.get("timestamp", 0.0))
             state = data.get("state", "UNKNOWN")
             NMSState.update(state, ts, data)
+
+            if state != "IN_COCKPIT" and _cruise_enabled:
+                _set_cruise(False)
 
             check_if_stuck(state, data, ts)
 
@@ -296,6 +299,23 @@ def stop(args=None):
     send_key("w", 0.1)
     _last_stop_t = time.time()
     
+
+def _set_cruise(enabled: bool):
+    global _cruise_enabled
+    if enabled:
+        hwnd, _ = focus_nms()
+        if not hwnd:
+            return
+        win32api.keybd_event(ord("W"), 0, 0, 0)
+    else:
+        win32api.keybd_event(ord("W"), 0, win32con.KEYEVENTF_KEYUP, 0)
+    _cruise_enabled = enabled
+
+
+def cruise(args=None):
+    """Toggle holding W while in the cockpit"""
+    _set_cruise(not _cruise_enabled)
+
 
 def forward(args=None):
     """Hold W for ARG * SECONDS_PER_STEP seconds"""
@@ -525,6 +545,7 @@ COMMANDS: dict[str, Command] = {
     "sky":     Command(sky,     "Drop the Walker from a large height."),
     "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
+    "cruise":  Command(cruise,  "Toggle cockpit cruise on/off.",          aliases=("engage",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
     "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
     "up":      Command(up,      "Look up N steps. e.g. !up 5",                           aliases=("u",)),
@@ -573,6 +594,8 @@ def get_canonical_command_name(name: str) -> str:
 def is_command_allowed(name: str, state: str | None = None) -> bool:
     canonical_name = get_canonical_command_name(name)
     state = state or NMSState.get()
+    if canonical_name == "cruise":
+        return state == "IN_COCKPIT"
     blocked_commands = BLOCKED_COMMANDS_BY_STATE.get(state, set())
     return canonical_name not in blocked_commands
 
