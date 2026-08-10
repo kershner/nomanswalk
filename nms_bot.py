@@ -2,6 +2,7 @@ from utils import focus_nms, send_key, log
 from dataclasses import dataclass
 from typing import Callable
 import threading
+import keyboard
 import win32api
 import win32con
 import ctypes
@@ -306,9 +307,9 @@ def _set_cruise(enabled: bool):
         hwnd, _ = focus_nms()
         if not hwnd:
             return
-        win32api.keybd_event(ord("W"), 0, 0, 0)
+        keyboard.press("w")
     else:
-        win32api.keybd_event(ord("W"), 0, win32con.KEYEVENTF_KEYUP, 0)
+        keyboard.release("w")
     _cruise_enabled = enabled
 
 
