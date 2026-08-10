@@ -26,6 +26,23 @@ STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
 
+
+BLOCKED_COMMANDS_BY_STATE = {
+    "ON_FOOT": {
+        "launch",
+        "land",
+    },
+    "IN_COCKPIT": {
+        "jet",
+        "dig",
+        "sky",
+        "walk",
+        "stop",
+        "coords",
+        "teleport",
+    },
+}
+
 _last_walk_t = 0.0
 _last_stop_t = 0.0
 _last_xy = None
@@ -184,9 +201,9 @@ def _do_unstuck(timestamp):
         COMMANDS["right"].func(["100"])
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
-        log(f"STUCK: still stuck after right, trying tap_e")
-        COMMANDS["tap_e"].func()
-        _stuck_last_cmd = "tap_e"
+        log(f"STUCK: still stuck after right, trying spam_e")
+        COMMANDS["spam_e"].func()
+        _stuck_last_cmd = "spam_e"
     else:
         log(f"STUCK: trying jet()")
         COMMANDS["jet"].func()
@@ -321,12 +338,43 @@ def camera(args=None):
     send_key("0", 0.1, ["ctrl"])
 
 
-def tap_e(args=None):
+def spam_e(args=None):
     """Rapidly tap E (QTEs)"""
     focus_nms()
     for _ in range(15):
         send_key("e", 0.1)
         time.sleep(0.05)
+
+
+def tap_e(args=None):
+    """Tap E once"""
+    send_key("e", 0.1)
+
+
+def hold_e(args=None):
+    """Hold E for 5 seconds"""
+    send_key("e", 5)
+
+
+def launch(args=None):
+    """Hold W for 5 seconds"""
+    send_key("w", 5)
+
+
+def land(args=None):
+    """Tap E once"""
+    tap_e()
+
+
+def left_click_cmd(args=None):
+    """Click the left mouse button once"""
+    left_click()
+
+
+def right_click_cmd(args=None):
+    """Click the right mouse button once"""
+    focus_nms()
+    right_mouse_click()
 
 
 def coords(args=None):
@@ -464,12 +512,18 @@ COMMANDS: dict[str, Command] = {
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
     "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
-    "up":      Command(up,      "Look up N steps. e.g. !up 5",           aliases=("u",)),
-    "down":    Command(down,    "Look down N steps. e.g. !down 5",       aliases=("dn",)),
-    "left":    Command(left,    "Turn left N steps. e.g. !left 5",       aliases=("l",)),
-    "right":   Command(right,   "Turn right N steps. e.g. !right 5",     aliases=("r",)),
+    "up":      Command(up,      "Look up N steps. e.g. !up 5",                           aliases=("u",)),
+    "down":    Command(down,    "Look down N steps. e.g. !down 5",                       aliases=("dn",)),
+    "left":    Command(left,    "Turn left N steps. e.g. !left 5",                       aliases=("l",)),
+    "right":   Command(right,   "Turn right N steps. e.g. !right 5",                     aliases=("r",)),
     "camera":  Command(camera,  "Toggle third person camera."),
-    "tap_e":   Command(tap_e,   "Rapidly tap E. Useful for QTEs.", hidden=True),
+    "spam_e":  Command(spam_e,  "Rapidly tap E. Useful for QTEs.", hidden=True),
+    "tap_e":   Command(tap_e,   "Tap E once."),
+    "hold_e":  Command(hold_e,  "Hold E for 5 seconds."),
+    "launch":  Command(launch,  "Launch the ship. Cockpit only."),
+    "land":    Command(land,    "Land the ship. Cockpit only."),
+    "left_click": Command(left_click_cmd, "Click the left mouse button once."),
+    "right_click": Command(right_click_cmd, "Click the right mouse button once."),
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
     "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
@@ -487,6 +541,25 @@ for _cmd in list(COMMANDS.values()):
     for _alias in _cmd.aliases:
         if _alias not in COMMANDS:
             COMMANDS[_alias] = _cmd
+
+
+def get_canonical_command_name(name: str) -> str:
+    cmd = COMMANDS.get(name)
+    if not cmd:
+        return name
+
+    for command_name, command in COMMANDS.items():
+        if command is cmd and command_name not in cmd.aliases:
+            return command_name
+
+    return name
+
+
+def is_command_allowed(name: str, state: str | None = None) -> bool:
+    canonical_name = get_canonical_command_name(name)
+    state = state or NMSState.get()
+    blocked_commands = BLOCKED_COMMANDS_BY_STATE.get(state, set())
+    return canonical_name not in blocked_commands
 
 
 def main():

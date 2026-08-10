@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, start_state_poller, left_click, is_planet_loading
+from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from datetime import datetime, timedelta
@@ -803,6 +803,11 @@ class NMSBot(commands.Bot):
             return
 
         if name in Config.ADMIN_ONLY_COMMANDS and not self._is_admin(ctx.author.name):
+            return
+
+        state = NMSState.get()
+        if not is_command_allowed(name, state):
+            await self._say(ctx, f"!{name} is not available while {state.lower().replace('_', ' ')}.")
             return
 
         if name == "teleport" and args:

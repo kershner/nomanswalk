@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, send_from_directory
-from nms_bot import COMMANDS, start_state_poller
+from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller
 import os
 
 app = Flask(__name__)
@@ -20,6 +20,14 @@ def run_command(raw):
     name, *args = parts
     if name not in COMMANDS:
         return jsonify({"ok": False, "error": f"unknown command: {name}"}), 404
+
+    state = NMSState.get()
+    if not is_command_allowed(name, state):
+        return jsonify({
+            "ok": False,
+            "error": f"{name} is not available while {state.lower().replace('_', ' ')}",
+        }), 403
+
     try:
         COMMANDS[name].func(args)
         return jsonify({"ok": True, "cmd": name})
