@@ -8,19 +8,42 @@ from pymhf import ModState
 
 _base_dir = os.path.dirname(os.path.abspath(__file__))
 
-_mod_status = {
+_MOD_STATUS_FILE = os.path.join(_base_dir, "mod_status.json")
+_DEFAULT_MOD_STATUS = {
     "gravity": "normal",
     "storm": "normal",
     "time": "normal",
 }
 
 
+def _read_mod_status() -> dict:
+    try:
+        with open(_MOD_STATUS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(_DEFAULT_MOD_STATUS)
+
+    status = dict(_DEFAULT_MOD_STATUS)
+    if isinstance(data, dict):
+        status.update({k: str(v) for k, v in data.items() if k in status})
+    return status
+
+
+def _write_mod_status(status: dict) -> None:
+    temp_file = f"{_MOD_STATUS_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(status, f, indent=2)
+    os.replace(temp_file, _MOD_STATUS_FILE)
+
+
 def set_mod_status(name: str, value: str) -> None:
-    _mod_status[name] = value
+    status = _read_mod_status()
+    status[name] = value
+    _write_mod_status(status)
 
 
 def get_mod_status() -> dict:
-    return dict(_mod_status)
+    return _read_mod_status()
 
 
 def _make_logger(name, filename):

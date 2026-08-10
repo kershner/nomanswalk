@@ -19,6 +19,11 @@ TELEPORT_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "teleport_request.j
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
+ON_FOOT_MOUSE_STEP = 10
+COCKPIT_MOUSE_STEP = 30
+ON_FOOT_MOUSE_DELAY = 0.05
+COCKPIT_MOUSE_DELAY = 0.01
+
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
@@ -227,6 +232,12 @@ def move_mouse(dx: int, dy: int):
     ctypes.windll.user32.mouse_event(0x0001, dx, dy, 0, 0)
 
 
+def _mouse_settings() -> tuple[int, float]:
+    if NMSState.get() == "IN_COCKPIT":
+        return COCKPIT_MOUSE_STEP, COCKPIT_MOUSE_DELAY
+    return ON_FOOT_MOUSE_STEP, ON_FOOT_MOUSE_DELAY
+
+
 def left_click(hold_seconds: float = 0.0):
     focus_nms()
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -302,36 +313,40 @@ def up(args=None):
     """Move mouse up ARG steps"""
     n = _clamp(args[0] if args else 1)
     focus_nms()
+    step, delay = _mouse_settings()
     for _ in range(n):
-        move_mouse(0, -10)
-        time.sleep(0.05)
+        move_mouse(0, -step)
+        time.sleep(delay)
 
 
 def down(args=None):
     """Move mouse down ARG steps"""
     n = _clamp(args[0] if args else 1)
     focus_nms()
+    step, delay = _mouse_settings()
     for _ in range(n):
-        move_mouse(0, 10)
-        time.sleep(0.05)
+        move_mouse(0, step)
+        time.sleep(delay)
 
 
 def left(args=None):
     """Move mouse left ARG steps"""
     n = _clamp(args[0] if args else 1)
     focus_nms()
+    step, delay = _mouse_settings()
     for _ in range(n):
-        move_mouse(-10, 0)
-        time.sleep(0.05)
+        move_mouse(-step, 0)
+        time.sleep(delay)
 
 
 def right(args=None):
     """Move mouse right ARG steps"""
     n = _clamp(args[0] if args else 1)
     focus_nms()
+    step, delay = _mouse_settings()
     for _ in range(n):
-        move_mouse(10, 0)
-        time.sleep(0.05)
+        move_mouse(step, 0)
+        time.sleep(delay)
 
 
 def camera(args=None):
