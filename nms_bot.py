@@ -37,7 +37,6 @@ BLOCKED_COMMANDS_BY_STATE = {
         "land",
     },
     "IN_COCKPIT": {
-        "jet",
         "dig",
         "sky",
         "walk",
@@ -264,7 +263,7 @@ def right_mouse_click():
 # ---------------------------------------------------------------------------
 def jet(args=None):
     """Tap spacebar (jetpack burst)"""
-    send_key("space", 5)
+    send_key("space", 2.5)
 
 
 def dig(args=None):
