@@ -418,6 +418,11 @@ def coords(args=None):
         walk()  # right_mouse_click() stops autowalk in-game, so re-engage it
 
 
+def summon_ship(args=None):
+    """Summon ship with CTRL + 1"""
+    send_key("1", 0.1, ["ctrl"])
+
+
 def music(args=None):
     """Toggle the music by sending the "m" key.  Handled by the music_toggle mod"""
     send_key("m", 0.1)
@@ -554,6 +559,7 @@ COMMANDS: dict[str, Command] = {
     "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
     "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
+    "summon_ship": Command(summon_ship, "Summon ship."),
     "music": Command(music, "Toggle music on/off."),
     "day": Command(day, "Set the planet to daytime."),
     "night": Command(night, "Set the planet to nighttime."),
