@@ -235,12 +235,13 @@ def move_mouse(dx: int, dy: int):
 
 def left_click(hold_seconds: float = 0.0):
     focus_nms()
+    time.sleep(0.05)
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
 
     if hold_seconds > 0:
         time.sleep(float(hold_seconds))
     else:
-        time.sleep(0.02)
+        time.sleep(0.1)
 
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
@@ -253,6 +254,8 @@ def _clamp(val, lo=1, hi=100) -> int:
 
 
 def right_mouse_click():
+    focus_nms()
+    time.sleep(0.05)
     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
     time.sleep(0.1)
     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
