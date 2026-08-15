@@ -11,7 +11,7 @@ Standalone (creates a clip and posts it autonomously):
 from atproto import Client
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from utils import get_status_text
+from utils import get_info_text, get_location_text
 import requests
 import httpx
 import logging
@@ -209,10 +209,9 @@ def _download_clip(clip_id, headers, broadcaster_id):
 # ─────────────────────────────────────────────────────────────
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = ""):
     params = _load_params(params_file)
-    status = get_status_text(countdown=countdown)
-    main = status.get("main", "").strip()
-    details = status.get("details", "").strip()
-    status_text = " • ".join(filter(None, [main, details]))
+    info = get_info_text(countdown=countdown)
+    location = get_location_text()
+    status_text = " • ".join(filter(None, [info, location]))
 
     broadcaster_id = params["NMS_TWITCH_BROADCASTER_ID"]
     token = _get_twitch_token(params)

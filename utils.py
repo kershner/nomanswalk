@@ -104,64 +104,59 @@ def focus_nms():
     return hwnd, dlg
 
 
-def get_status_text(countdown: str = "") -> dict:
-    try:
-        from nms_bot import STATE_FILE, get_daily_stats
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
+def _get_status_state():
+    from nms_bot import STATE_FILE, get_daily_stats
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f), get_daily_stats()
 
+
+def get_info_text(countdown: str = "") -> str:
+    try:
+        state, stats = _get_status_state()
         planet = state.get("planet", {})
         env = state.get("environment") or {}
-        raw_state = state.get("state", "UNKNOWN")
-        in_space = raw_state != "ON_FOOT" and env.get("inside_atmosphere") is False
+        in_space = state.get("state", "UNKNOWN") != "ON_FOOT" and env.get("inside_atmosphere") is False
 
-        name = planet.get("name", "unknown")
-        biome = planet.get("biome", "unknown")
-        galaxy = f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')}"
-
-        stats = get_daily_stats()
-        today = (
+        activity = "In space" if in_space else f"Walking across {planet.get('name', 'unknown')} ({planet.get('biome', 'unknown')})"
+        parts = [activity]
+        if countdown:
+            parts.append(f"Next planet vote in {countdown}")
+        parts.append(
             f"Today: {stats['distance_walked']:,.0f}u walked • "
             f"{stats['planets_visited']} {'planet' if stats['planets_visited'] == 1 else 'planets'} visited • "
             f"{stats['walkers']} {'walker' if stats['walkers'] == 1 else 'walkers'} • "
             f"{stats['commands']} {'command' if stats['commands'] == 1 else 'commands'}"
         )
-
-        main_parts = ["In space" if in_space else f"Walking across {name} ({biome})"]
-        if countdown:
-            main_parts.append(f"Next planet vote in {countdown}")
-        main_status = " • ".join(main_parts)
-
-        if in_space:
-            details = f"{galaxy} • {today}"
-        else:
-            size = f"Size: {planet.get('planet_size', 'unknown')}"
-            rings = "Ringed" if planet.get("has_rings") else ""
-
-            weather = planet.get("weather_type", "")
-            weather = f"Weather: {weather}" if weather else ""
-
-            flora = planet.get("life", "")
-            flora = f"Flora: {flora}" if flora else ""
-
-            fauna = planet.get("creature_life", "")
-            fauna = f"Fauna: {fauna}" if fauna else ""
-
-            mods = state.get("mods", {})
-            gravity = f"Gravity: {mods.get('gravity', 'normal').title()}"
-            storm = f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}"
-            time_status = f"Time: {mods.get('time', 'normal').title()}"
-
-            planet_stats = " • ".join(filter(None, [
-                galaxy, size, rings, weather, flora, fauna, gravity, storm, time_status
-            ]))
-            details = f"{planet_stats} • {today}"
-
-        return {
-            "main": main_status,
-            "details": details,
-        }
-
+        return " • ".join(parts)
     except Exception as e:
-        log(f"get_status_text failed: {e}")
-        return {"main": "Could not read game state.", "details": ""}
+        log(f"get_info_text failed: {e}")
+        return "Could not read game state."
+
+
+def get_location_text() -> str:
+    try:
+        state, _ = _get_status_state()
+        planet = state.get("planet", {})
+        env = state.get("environment") or {}
+        if state.get("state", "UNKNOWN") != "ON_FOOT" and env.get("inside_atmosphere") is False:
+            return f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')} • In space"
+
+        mods = state.get("mods", {})
+        weather = planet.get("weather_type", "")
+        flora = planet.get("life", "")
+        fauna = planet.get("creature_life", "")
+        return " • ".join(filter(None, [
+            f"Planet: {planet.get('name', 'unknown')} ({planet.get('biome', 'unknown')})",
+            f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')}",
+            f"Size: {planet.get('planet_size', 'unknown')}",
+            "Ringed" if planet.get("has_rings") else "",
+            f"Weather: {weather}" if weather else "",
+            f"Flora: {flora}" if flora else "",
+            f"Fauna: {fauna}" if fauna else "",
+            f"Gravity: {mods.get('gravity', 'normal').title()}",
+            f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}",
+            f"Time: {mods.get('time', 'normal').title()}",
+        ]))
+    except Exception as e:
+        log(f"get_location_text failed: {e}")
+        return "Could not read location state."

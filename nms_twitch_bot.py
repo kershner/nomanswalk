@@ -1,6 +1,6 @@
 from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, activate_quickslot, cancel_movement, get_active_quickslot, get_canonical_command_name, is_quickslot_cooldown, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
 from twitchio.ext.commands.errors import CommandNotFound
-from utils import log, get_status_text
+from utils import log, get_info_text, get_location_text
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from twitchio.ext import commands
@@ -32,8 +32,9 @@ class Config:
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
     SCHEDULED_COMMANDS = [
-        (20 * 60, "_do_help"),    # !help  every 20 minutes
-        (30 * 60, "_do_status"),  # !status every 30 minutes
+        (20 * 60, "_do_help"),    # !help every 20 minutes
+        (30 * 60, "_do_info"),    # !info every 30 minutes
+        (60 * 60, "_do_location"),  # !location every 60 minutes
     ]
 
     SHUTDOWN_HOUR = 0             # 0 = midnight; change to e.g. 2 for 2 AM EST
@@ -319,7 +320,8 @@ class NMSBot(commands.Bot):
             log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
             await self._do_help(channel)
-            await self._do_status(channel)
+            await self._do_info(channel)
+            await self._do_location(channel)
 
             await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
             vote_task = self._teleport_vote.task
@@ -378,7 +380,7 @@ class NMSBot(commands.Bot):
             await self._say(ctx, "Quick menu closing — please wait.")
             return
 
-        if name in {"yes", "no", "help", "status"} or name in COMMANDS:
+        if name in {"yes", "no", "help", "more", "info", "location", "loc"} or name in COMMANDS:
             record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
 
         if name == "yes":
@@ -387,8 +389,12 @@ class NMSBot(commands.Bot):
             await self._cast_vote(ctx, message, "no", args[0] if args else "")
         elif name == "help":
             await self._do_help(ctx, args)
-        elif name == "status":
-            await self._do_status(ctx)
+        elif name == "more":
+            await self._do_more(ctx)
+        elif name == "info":
+            await self._do_info(ctx)
+        elif name in {"location", "loc"}:
+            await self._do_location(ctx)
         elif name:
             if name in Config.PARAM_GUARD_CMDS:
                 await self._param_guard_cmd(ctx, name, args)
@@ -794,26 +800,24 @@ class NMSBot(commands.Bot):
     async def cmd_no(self, ctx: commands.Context, target: str = ""):
         await self._cast_vote(ctx, ctx.message, "no", target)
 
-    @commands.command(name="status")
-    async def cmd_status(self, ctx: commands.Context):
-        await self._do_status(ctx)
+    @commands.command(name="info")
+    async def cmd_info(self, ctx: commands.Context):
+        await self._do_info(ctx)
 
-    async def _do_status(self, ctx):
-        try:
-            status = get_status_text(countdown=self._format_countdown())
-            main = status.get("main", "").strip()
-            details = status.get("details", "").strip()
-            status_text = " • ".join(filter(None, [main, details]))
-            status_text = f"🪐{status_text}"
-            await self._say(ctx, status_text)
-            await self._update_stream_info(title=main)
-        except Exception as e:
-            log(f"!status failed: {e}")
-            await self._say(ctx, "Could not read game state.")
-            return
-
+    async def _do_info(self, ctx):
+        info = get_info_text(countdown=self._format_countdown())
+        title = info.split(" • Today:", 1)[0]
+        await self._say(ctx, f"🪐{info}")
+        await self._update_stream_info(title=title)
         if self._bsky:
-            nms_bluesky.ensure_live(self._bsky, main)
+            nms_bluesky.ensure_live(self._bsky, title)
+
+    @commands.command(name="location", aliases=("loc",))
+    async def cmd_location(self, ctx: commands.Context):
+        await self._do_location(ctx)
+
+    async def _do_location(self, ctx):
+        await self._say(ctx, f"🌎{get_location_text()}")
 
     def _format_countdown(self) -> str:
         """Return a human-readable countdown to the next auto-teleport, e.g. '3h24m'."""
@@ -869,9 +873,23 @@ class NMSBot(commands.Bot):
     async def cmd_help(self, ctx: commands.Context):
         await self._do_help(ctx)
 
+    def _help_commands(self):
+        all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
+        return [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
+
     async def _do_help(self, ctx, args=None):
         if args:
             name = args[0].lower().lstrip("!")
+            meta_help = {
+                "info": "Show current activity and today's stats.",
+                "location": "Show current planet or space details.",
+                "loc": "Alias for !location.",
+                "help": "Show command list page 1.",
+                "more": "Show command list page 2.",
+            }
+            if name in meta_help:
+                await self._say(ctx, f"!{name}: {meta_help[name]}")
+                return
             cmd = COMMANDS.get(name)
             if cmd:
                 alias_str = (f" (aliases: {', '.join('!' + a for a in cmd.aliases)})" if cmd.aliases else "")
@@ -879,13 +897,20 @@ class NMSBot(commands.Bot):
             else:
                 await self._say(ctx, f"Unknown command: !{name}")
             return
-        all_aliases = {a for c in COMMANDS.values() for a in c.aliases}
-        primary_names = [n for n in COMMANDS if n not in all_aliases and not COMMANDS[n].hidden]
-        cmds_text = "Commands: " + " • ".join(f"!{n}" for n in primary_names)
-        cmds_text = f"{cmds_text} • Type !help <cmd> for more details."
-        preamble = "🛸"
-        help_text = f"{preamble}{cmds_text}"
-        await self._say(ctx, help_text)
+
+        commands = self._help_commands()
+        split = (len(commands) + 1) // 2
+        await self._say(ctx, f"🛸Commands: {' • '.join('!' + n for n in commands[:split])} • Type !more for more commands.")
+
+    @commands.command(name="more")
+    async def cmd_more(self, ctx: commands.Context):
+        await self._do_more(ctx)
+
+    async def _do_more(self, ctx):
+        commands = self._help_commands()
+        split = (len(commands) + 1) // 2
+        commands = commands[split:] + ["help", "info", "location"]
+        await self._say(ctx, f"🛸More: {' • '.join('!' + n for n in commands)} • Type !help <cmd> for details.")
 
     @commands.command(name="walk")
     async def cmd_walk(self, ctx: commands.Context):
