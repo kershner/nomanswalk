@@ -309,7 +309,7 @@ def _set_cruise(enabled: bool):
 
 
 def cruise(args=None):
-    """Toggle holding W while in the cockpit"""
+    """Toggle holding W while not on foot."""
     _set_cruise(not _cruise_enabled)
 
 
@@ -537,35 +537,35 @@ class Command:
 
 
 COMMANDS: dict[str, Command] = {
-    "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
-    "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=()),
-    "sky":     Command(sky,     "Drop the Walker from a large height."),
-    "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
-    "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
-    "cruise":  Command(cruise,  "Toggle cockpit cruise on/off.",          aliases=("engage",)),
-    "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
-    "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
-    "up":      Command(up,      "Look up N steps. e.g. !up 5",                           aliases=("u",)),
-    "down":    Command(down,    "Look down N steps. e.g. !down 5",                       aliases=("d", "dn")),
-    "left":    Command(left,    "Turn left N steps. e.g. !left 5",                       aliases=("l",)),
-    "right":   Command(right,   "Turn right N steps. e.g. !right 5",                     aliases=("r",)),
-    "camera":  Command(camera,  "Toggle third person camera."),
-    "spam_e":  Command(spam_e,  "Rapidly tap E. Useful for QTEs.", hidden=True),
-    "tap_e":   Command(tap_e,   "Tap E once."),
-    "hold_e":  Command(hold_e,  "Hold E for 5 seconds."),
-    "launch":  Command(launch,  "Launch the ship. Cockpit only."),
-    "land":    Command(land,    "Land the ship. Cockpit only."),
+    "jet":     Command(jet,     "On foot: hold the jetpack key for 2.5 seconds. In a ship: boost forward for 2.5 seconds.", aliases=("j",)),
+    "dig":     Command(dig,     "Hold the left mouse button for 10 seconds to dig terrain.", aliases=()),
+    "sky":     Command(sky,     "Drop the Walker from high above the planet."),
+    "walk":    Command(walk,    "Toggle continuous forward walking on/off.", aliases=("w",)),
+    "stop":    Command(stop,    "Tap the forward key once to stop continuous walking.", aliases=("s",)),
+    "cruise":  Command(cruise,  "While in a ship, toggle holding the forward key continuously on/off.", aliases=("engage",)),
+    "forward": Command(forward, "Hold the forward key for 1-100 seconds. e.g. !forward 3 holds it for 3 seconds.", aliases=("f",)),
+    "back":    Command(back,    "Hold the backward key for 1-100 seconds. e.g. !back 3 holds it for 3 seconds.", aliases=("b",)),
+    "up":      Command(up,      "Move the mouse up 1-100 steps. e.g. !up 5 moves it up 5 steps.", aliases=("u",)),
+    "down":    Command(down,    "Move the mouse down 1-100 steps. e.g. !down 5 moves it down 5 steps.", aliases=("d", "dn")),
+    "left":    Command(left,    "Move the mouse left 1-100 steps. e.g. !left 5 turns left 5 steps.", aliases=("l",)),
+    "right":   Command(right,   "Move the mouse right 1-100 steps. e.g. !right 5 turns right 5 steps.", aliases=("r",)),
+    "camera":  Command(camera,  "Start a vote to switch between first-person and third-person camera views."),
+    "spam_e":  Command(spam_e,  "Rapidly tap the interact key 15 times. Useful for QTEs.", hidden=True),
+    "tap_e":   Command(tap_e,   "Tap the interact key once."),
+    "hold_e":  Command(hold_e,  "Hold the interact key for 5 seconds."),
+    "launch":  Command(launch,  "While in a ship, hold the forward key for 5 seconds to launch."),
+    "land":    Command(land,    "While in a ship, tap the interact key once to attempt to land."),
     "left_click": Command(left_click_cmd, "Click the left mouse button once."),
     "right_click": Command(right_click_cmd, "Click the right mouse button once."),
-    "coords":  Command(coords,  "Show planet coordinates for 10 seconds."),
+    "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
     "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
-    "summon_ship": Command(summon_ship, "Summon ship."),
-    "music": Command(music, "Toggle music on/off."),
-    "day": Command(day, "Set the planet to daytime."),
-    "night": Command(night, "Set the planet to nighttime."),
-    "resume_time": Command(resume_time, "Resume the game's normal planet time."),
-    "storm": Command(storm, "Toggle forced storm weather on/off."),
+    "summon_ship": Command(summon_ship, "Open the quick menu with the Walker's ship selected."),
+    "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
+    "day": Command(day, "Force the current planet to daytime."),
+    "night": Command(night, "Force the current planet to nighttime."),
+    "resume_time": Command(resume_time, "Return to the planet's normal day/night cycle."),
+    "storm": Command(storm, "Toggle a forced storm on/off."),
     "gravity": Command(gravity, "Toggle low gravity on/off."),
 }
 
