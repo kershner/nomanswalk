@@ -537,7 +537,7 @@ class Command:
 
 COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "Jetpack burst.",                        aliases=("j",)),
-    "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=("d",)),
+    "dig":     Command(dig,     "Hold left-click for 10s to dig terrain.",aliases=()),
     "sky":     Command(sky,     "Drop the Walker from a large height."),
     "walk":    Command(walk,    "Toggle autowalk on/off.",               aliases=("w",)),
     "stop":    Command(stop,    "Stop autowalking.",                     aliases=("s",)),
@@ -545,7 +545,7 @@ COMMANDS: dict[str, Command] = {
     "forward": Command(forward, "Walk forward N steps. e.g. !forward 3", aliases=("f",)),
     "back":    Command(back,    "Walk backward N steps. e.g. !back 3",   aliases=("b",)),
     "up":      Command(up,      "Look up N steps. e.g. !up 5",                           aliases=("u",)),
-    "down":    Command(down,    "Look down N steps. e.g. !down 5",                       aliases=("dn",)),
+    "down":    Command(down,    "Look down N steps. e.g. !down 5",                       aliases=("d", "dn")),
     "left":    Command(left,    "Turn left N steps. e.g. !left 5",                       aliases=("l",)),
     "right":   Command(right,   "Turn right N steps. e.g. !right 5",                     aliases=("r",)),
     "camera":  Command(camera,  "Toggle third person camera."),
