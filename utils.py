@@ -129,7 +129,7 @@ def get_status_text(countdown: str = "") -> dict:
 
         mods = state.get("mods", {})
         gravity = f"Gravity: {mods.get('gravity', 'normal').title()}"
-        storm = f"Storm: {mods.get('storm', 'normal').title()}"
+        storm = f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}"
         time_status = f"Time: {mods.get('time', 'normal').title()}"
 
         planet_stats = " • ".join(filter(None, [

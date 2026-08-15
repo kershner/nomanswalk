@@ -39,7 +39,7 @@ class StormToggle(Mod):
 
     def __init__(self):
         super().__init__()
-        self._forced_storm = False
+        self._forced_storm = None
 
     def _read_debug_bool(self, name: str):
         try:
@@ -77,37 +77,40 @@ class StormToggle(Mod):
         self._write_sky("ForceStormSetting", True)
         self._write_sky("ForceStormStrength", 1.0)
 
-    def _reapply_forced_storm(self) -> None:
-        if self._forced_storm:
-            try:
-                self._apply_forced_storm()
-            except Exception:
-                _flog.error("failed to reapply forced storm")
-                _flog.error(traceback.format_exc())
+    def _sync_status(self) -> None:
+        setting = self._read_sky("ForceStormSetting")
+        strength = self._read_sky("ForceStormStrength")
+        try:
+            forced = bool(setting) and float(strength) > 0.0
+        except (TypeError, ValueError):
+            forced = bool(setting) and bool(strength)
+
+        if forced != self._forced_storm:
+            self._forced_storm = forced
+            set_mod_status("storm", "forced" if forced else "normal")
 
     @nms.cGcPlanet.Construct.after
     def on_planet_construct(self, this, *args) -> None:
-        self._reapply_forced_storm()
+        self._sync_status()
 
     @nms.cGcPlanet.Generate.after
     def on_planet_generate(self, this, *args) -> None:
-        self._reapply_forced_storm()
+        self._sync_status()
 
     @nms.cGcPlanet.SetupRegionMap.after
     def on_region_map(self, this) -> None:
-        self._reapply_forced_storm()
+        self._sync_status()
 
     @nms.cGcPlanet.UpdateWeather.after
     def on_update_weather(self, this, lfTimeStep) -> None:
-        self._reapply_forced_storm()
+        self._sync_status()
 
     def _start_storm(self, source: str) -> None:
         try:
             before = self._snapshot()
 
             self._apply_forced_storm()
-            self._forced_storm = True
-            set_mod_status("storm", "forced")
+            self._sync_status()
 
             msg = f"[{source}] forced storm ON: {before} -> {self._snapshot()}"
             logger.info(msg)
@@ -124,8 +127,7 @@ class StormToggle(Mod):
             self._write_sky("ForceStormSetting", False)
             self._write_debug_bool("ForceExtremeWeather", False)
             self._write_debug_bool("DisableStorms", True)
-            self._forced_storm = False
-            set_mod_status("storm", "normal")
+            self._sync_status()
 
             msg = f"[{source}] forced storm OFF: {before} -> {self._snapshot()}"
             logger.info(msg)
@@ -137,6 +139,7 @@ class StormToggle(Mod):
     @on_key_pressed("f9")
     def toggle_storm(self) -> None:
         try:
+            self._sync_status()
             if self._forced_storm:
                 self._stop_storm("F9")
             else:

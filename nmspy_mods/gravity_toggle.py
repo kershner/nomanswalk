@@ -39,7 +39,7 @@ _flog.info("=== gravity_toggle.py loaded ===")
 
 @dataclass
 class GravityToggleState(ModState):
-    low_gravity_enabled: bool = False
+    low_gravity_enabled: bool | None = None
     planets: list[nms.cGcPlanet] = field(default_factory=list)
 
 
@@ -57,9 +57,6 @@ class GravityToggle(Mod):
             if all(ctypes.addressof(p) != ctypes.addressof(planet) for p in self.state.planets):
                 self.state.planets.append(planet)
 
-            if self.state.low_gravity_enabled:
-                planet.UpdateGravity(LOW_GRAVITY_MULTIPLIER)
-
             msg = f"cached planet; count={len(self.state.planets)} low_gravity={self.state.low_gravity_enabled}"
             logger.info(msg)
             _flog.info(msg)
@@ -67,10 +64,12 @@ class GravityToggle(Mod):
             _flog.error("failed while caching planet")
             _flog.error(traceback.format_exc())
 
-    @nms.cGcPlanet.UpdateGravity.before
+    @nms.cGcPlanet.UpdateGravity.after
     def on_update_gravity(self, this: ctypes._Pointer[nms.cGcPlanet], lfNewGravityMultiplier: float):
-        if self.state.low_gravity_enabled:
-            return (this, LOW_GRAVITY_MULTIPLIER)
+        low_gravity = abs(float(lfNewGravityMultiplier) - LOW_GRAVITY_MULTIPLIER) < 0.001
+        if low_gravity != self.state.low_gravity_enabled:
+            self.state.low_gravity_enabled = low_gravity
+            set_mod_status("gravity", "low" if low_gravity else "normal")
 
     def _apply_gravity(self, multiplier: float, source: str) -> None:
         try:
@@ -92,7 +91,5 @@ class GravityToggle(Mod):
 
     @on_key_pressed("f10")
     def toggle_gravity(self) -> None:
-        self.state.low_gravity_enabled = not self.state.low_gravity_enabled
-        set_mod_status("gravity", "low" if self.state.low_gravity_enabled else "normal")
-        multiplier = LOW_GRAVITY_MULTIPLIER if self.state.low_gravity_enabled else NORMAL_GRAVITY_MULTIPLIER
+        multiplier = NORMAL_GRAVITY_MULTIPLIER if self.state.low_gravity_enabled else LOW_GRAVITY_MULTIPLIER
         self._apply_gravity(multiplier, "F10")

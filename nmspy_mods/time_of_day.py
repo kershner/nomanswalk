@@ -19,6 +19,8 @@ import traceback
 from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed
 from nmspy.globals import globals
+
+import nmspy.data.types as nms
 from shared_state import set_mod_status
 
 
@@ -61,18 +63,34 @@ class TimeOfDay(Mod):
     __description__ = "Set or release No Man's Sky time-of-day debug override with F6/F7/F8."
     __version__ = "1.2"
 
+    def __init__(self):
+        super().__init__()
+        self._last_status = None
+
+    def _sync_status(self) -> None:
+        value = float(globals.GcDebugOptions.ForceTimeOfDay)
+        if abs(value - DAY_TIME) < 0.001:
+            status = "day"
+        elif abs(value - NIGHT_TIME) < 0.001:
+            status = "night"
+        else:
+            status = "normal"
+
+        if status != self._last_status:
+            self._last_status = status
+            set_mod_status("time", status)
+
+    @nms.cGcSky.Update.after
+    def on_sky_update(self, this, lfTimeStep) -> None:
+        self._sync_status()
+
     def _set_time(self, value: float, source: str) -> None:
         try:
             before = globals.GcDebugOptions.ForceTimeOfDay
             globals.GcDebugOptions.ForceTimeOfDay = float(value)
             after = globals.GcDebugOptions.ForceTimeOfDay
 
-            if value == DAY_TIME:
-                set_mod_status("time", "day")
-            elif value == NIGHT_TIME:
-                set_mod_status("time", "night")
-            else:
-                set_mod_status("time", "normal")
+            self._sync_status()
 
             msg = f"[{source}] ForceTimeOfDay {before} -> {after}"
             logger.info(msg)
