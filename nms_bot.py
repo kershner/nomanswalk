@@ -721,6 +721,10 @@ def dance(args=None):
     trigger_quickslot(5)
 
 
+def inventory(args=None):
+    send_key("tab", 0.1)
+
+
 def music(args=None):
     """Toggle the music by sending the "m" key.  Handled by the music_toggle mod"""
     send_key("m", 0.1)
@@ -856,6 +860,7 @@ COMMANDS: dict[str, Command] = {
     "anomaly": Command(anomaly, "Select the Space Anomaly placement quickslot."),
     "pet": Command(pet, "Select the Walker's pet placement quickslot."),
     "dance": Command(dance, "Make the Walker dance."),
+    "inventory": Command(inventory, "Open the inventory."),
     "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
     "day": Command(day, "Force the current planet to daytime."),
     "night": Command(night, "Force the current planet to nighttime."),
