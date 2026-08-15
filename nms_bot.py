@@ -36,7 +36,7 @@ BLOCKED_COMMANDS_BY_STATE = {
         "launch",
         "land",
     },
-    "IN_COCKPIT": {
+    "NOT_ON_FOOT": {
         "dig",
         "sky",
         "walk",
@@ -83,7 +83,7 @@ def _is_in_cave() -> bool:
 # ---------------------------------------------------------------------------
 class NMSState:
     _lock = threading.Lock()
-    _current: str = "UNKNOWN"
+    _current: str = "NOT_ON_FOOT"
     _timestamp: float = 0.0
     _data: dict = {}
 
@@ -114,10 +114,11 @@ def poll_state():
                 data = json.load(f)
 
             ts = float(data.get("timestamp", 0.0))
-            state = data.get("state", "UNKNOWN")
+            raw_state = data.get("state", "UNKNOWN")
+            state = "ON_FOOT" if raw_state == "ON_FOOT" else "NOT_ON_FOOT"
             NMSState.update(state, ts, data)
 
-            if state != "IN_COCKPIT" and _cruise_enabled:
+            if state == "ON_FOOT" and _cruise_enabled:
                 _set_cruise(False)
 
             check_if_stuck(state, data, ts)
@@ -592,7 +593,7 @@ def is_command_allowed(name: str, state: str | None = None) -> bool:
     canonical_name = get_canonical_command_name(name)
     state = state or NMSState.get()
     if canonical_name == "cruise":
-        return state == "IN_COCKPIT"
+        return state == "NOT_ON_FOOT"
     blocked_commands = BLOCKED_COMMANDS_BY_STATE.get(state, set())
     return canonical_name not in blocked_commands
 
