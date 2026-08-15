@@ -519,7 +519,13 @@ def is_quickslot_cooldown():
 def trigger_quickslot(slot: int, name=None):
     if name:
         activate_quickslot(name)
-    send_key(str(slot), 0.1, ["ctrl"])
+    restore_shift = _boost_enabled
+    keyboard.release("shift")
+    try:
+        send_key(str(slot), 0.1, ["ctrl"])
+    finally:
+        if restore_shift and _boost_enabled:
+            keyboard.press("shift")
 
 
 def _hold_movement_key(key: str, duration: float, generation: int | None):

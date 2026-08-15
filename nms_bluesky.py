@@ -11,7 +11,7 @@ Standalone (creates a clip and posts it autonomously):
 from atproto import Client
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from utils import get_info_text, get_location_text
+from utils import get_info_text
 import requests
 import httpx
 import logging
@@ -207,11 +207,20 @@ def _download_clip(clip_id, headers, broadcaster_id):
 # ─────────────────────────────────────────────────────────────
 # Post a clip to Bluesky
 # ─────────────────────────────────────────────────────────────
+BLUESKY_MAX_TEXT = 300
+
+
+def _fit_post_text(status_text: str, tag_line: str) -> str:
+    suffix = f"\n\n{tag_line}" if tag_line else ""
+    available = BLUESKY_MAX_TEXT - len(suffix)
+    if len(status_text) > available:
+        status_text = status_text[:max(0, available - 1)].rstrip() + "…"
+    return f"{status_text}{suffix}"
+
+
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = ""):
     params = _load_params(params_file)
-    info = get_info_text(countdown=countdown)
-    location = get_location_text()
-    status_text = " • ".join(filter(None, [info, location]))
+    status_text = get_info_text(countdown=countdown)
 
     broadcaster_id = params["NMS_TWITCH_BROADCASTER_ID"]
     token = _get_twitch_token(params)
@@ -232,7 +241,7 @@ def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str
 
         tags = _pick_tags()
         tag_line = " ".join(f"#{t}" for t in tags)
-        full_text = f"{status_text}\n\n{tag_line}"
+        full_text = _fit_post_text(status_text, tag_line)
 
         facets = []
         for tag in tags:
