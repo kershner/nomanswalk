@@ -71,6 +71,7 @@ class Config:
         "s": "All movement stopped.",
         "cruise": "Cruise toggled.",
         "engage": "Cruise toggled.",
+        "boost": "Boost toggled.",
         "camera": "Camera toggled.",
         "coords": "Showing planet coordinates for 10 seconds.",
         "music": "Music toggled.",

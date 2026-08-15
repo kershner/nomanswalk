@@ -40,10 +40,12 @@ BLOCKED_COMMANDS_BY_STATE = {
         "launch",
         "land",
         "anomaly",
+        "boost",
     },
     "NOT_ON_FOOT": {
         "dig",
         "sky",
+        "jet",
         "walk",
         "coords",
         "ship",
@@ -59,9 +61,10 @@ _stuck = False
 _stuck_last_cmd = None
 _last_unstuck_t = 0.0
 _cruise_enabled = False
+_boost_enabled = False
 
 MOVEMENT_COMMANDS = {
-    "jet", "walk", "cruise", "forward", "back",
+    "jet", "walk", "cruise", "boost", "forward", "back",
     "up", "down", "left", "right", "launch",
 }
 _movement_generation = 0
@@ -238,6 +241,7 @@ def get_runtime_game_state():
 def set_planet_loading(val: bool):
     if val:
         clear_active_quickslot("planet loading")
+        _set_boost(False)
     set_runtime_game_state(planet_loading=bool(val))
     log(f"Planet loading: {val}")
 
@@ -297,8 +301,11 @@ def poll_state():
 
             if state != "ON_FOOT":
                 _autowalk_enabled = False
-            elif _cruise_enabled:
-                _set_cruise(False)
+            else:
+                if _cruise_enabled:
+                    _set_cruise(False)
+                if _boost_enabled:
+                    _set_boost(False)
 
             check_if_stuck(state, data)
 
@@ -463,7 +470,7 @@ def cancel_movement() -> int:
         _movement_generation += 1
         generation = _movement_generation
 
-    for key in ("w", "s", "space"):
+    for key in ("w", "s", "space", "shift"):
         keyboard.release(key)
     return generation
 
@@ -535,7 +542,7 @@ def _hold_movement_key(key: str, duration: float, generation: int | None):
 
 
 def jet(args=None, movement_generation=None):
-    """Tap spacebar (jetpack burst)"""
+    """Hold the jetpack key for 2.5 seconds"""
     _hold_movement_key("space", 2.5, movement_generation)
 
 
@@ -552,6 +559,8 @@ def sky(args=None):
 def walk(args=None, movement_generation=None):
     global _autowalk_enabled, _last_move_t, _last_xy
     """Toggle autowalk (backslash)"""
+    if _boost_enabled:
+        _set_boost(False)
     if _movement_cancelled(movement_generation):
         return
     _hold_movement_key("k", 0.1, movement_generation)
@@ -563,18 +572,22 @@ def walk(args=None, movement_generation=None):
 
 
 def stop(args=None):
-    global _autowalk_enabled, _cruise_enabled
-    """Stop all movement and end autowalk/cruise."""
+    global _autowalk_enabled, _cruise_enabled, _boost_enabled
+    """Stop all movement and end autowalk/cruise/boost."""
     clear_active_quickslot("stop")
     _autowalk_enabled = False
     _cruise_enabled = False
+    _boost_enabled = False
     _reset_stuck()
+    keyboard.release("shift")
     send_key("w", 0.1)
 
 
 def _set_cruise(enabled: bool, movement_generation=None):
     global _autowalk_enabled, _cruise_enabled
     if enabled:
+        if _boost_enabled:
+            _set_boost(False)
         if _movement_cancelled(movement_generation):
             return
         hwnd, _ = focus_nms()
@@ -593,6 +606,33 @@ def cruise(args=None, movement_generation=None):
     if _movement_cancelled(movement_generation):
         return
     _set_cruise(not _cruise_enabled, movement_generation)
+
+
+def _set_boost(enabled: bool, movement_generation=None):
+    global _autowalk_enabled, _boost_enabled
+    if enabled:
+        if _movement_cancelled(movement_generation):
+            return
+        hwnd, _ = focus_nms()
+        if not hwnd or _movement_cancelled(movement_generation):
+            return
+        if _cruise_enabled:
+            _set_cruise(False)
+        _autowalk_enabled = False
+        _reset_stuck()
+        keyboard.press("w")
+        keyboard.press("shift")
+    else:
+        keyboard.release("shift")
+        keyboard.release("w")
+    _boost_enabled = enabled
+
+
+def boost(args=None, movement_generation=None):
+    """Toggle holding W + Left Shift while in a ship."""
+    if _movement_cancelled(movement_generation):
+        return
+    _set_boost(not _boost_enabled, movement_generation)
 
 
 def forward(args=None, movement_generation=None):
@@ -833,12 +873,13 @@ class Command:
 
 
 COMMANDS: dict[str, Command] = {
-    "jet":     Command(jet,     "On foot: hold the jetpack key for 2.5 seconds. In a ship: boost forward for 2.5 seconds.", aliases=("j",)),
+    "jet":     Command(jet,     "On foot: hold the jetpack key for 2.5 seconds.", aliases=("j",)),
     "dig":     Command(dig,     "Hold the left mouse button for 10 seconds to dig terrain.", aliases=()),
     "sky":     Command(sky,     "Drop the Walker from high above the planet."),
     "walk":    Command(walk,    "Toggle continuous forward walking on/off.", aliases=("w",)),
     "stop":    Command(stop,    "Stop all active and queued movement immediately.", aliases=("s",)),
     "cruise":  Command(cruise,  "While in a ship, toggle holding the forward key continuously on/off.", aliases=("engage",)),
+    "boost":   Command(boost,   "While in a ship, toggle holding forward + boost continuously on/off."),
     "forward": Command(forward, "Hold the forward key for 1-100 seconds. e.g. !forward 3 holds it for 3 seconds.", aliases=("f",)),
     "back":    Command(back,    "Hold the backward key for 1-100 seconds. e.g. !back 3 holds it for 3 seconds.", aliases=("b",)),
     "up":      Command(up,      "Move the mouse up 1-100 steps. e.g. !up 5 moves it up 5 steps.", aliases=("u",)),
