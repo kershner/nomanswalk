@@ -222,7 +222,8 @@ class VoteState:
 # BOT
 # ─────────────────────────────────────────────────────────────
 class NMSBot(commands.Bot):
-    def __init__(self):
+    def __init__(self, dev_mode=False):
+        self._dev_mode = dev_mode
         self._admin_users = set(Config.get_admin_users())
 
         self._vote = VoteState()
@@ -235,9 +236,12 @@ class NMSBot(commands.Bot):
         self._worker_task: Optional[asyncio.Task] = None
         self._active_command_tasks: set[asyncio.Task] = set()
 
-        self._tokens = OAuthTokens(Config.get_client_id(), Config.get_client_secret(), Config.TOKENS_FILE)
-        tokens = self._tokens.ensure_fresh()
-        self._access_token = str(tokens.get("access_token") or "").strip()
+        self._tokens = None
+        self._access_token = "dev"
+        if not self._dev_mode:
+            self._tokens = OAuthTokens(Config.get_client_id(), Config.get_client_secret(), Config.TOKENS_FILE)
+            tokens = self._tokens.ensure_fresh()
+            self._access_token = str(tokens.get("access_token") or "").strip()
 
         self._bsky = None
         self._bluesky_post_task: Optional[asyncio.Task] = None
@@ -254,11 +258,12 @@ class NMSBot(commands.Bot):
             initial_channels=[Config.TWITCH_CHANNEL],
         )
 
-        try:
-            self._bsky = nms_bluesky.login()
-            log("Bluesky logged in.")
-        except Exception as e:
-            log(f"Bluesky login failed: {e}")
+        if not self._dev_mode:
+            try:
+                self._bsky = nms_bluesky.login()
+                log("Bluesky logged in.")
+            except Exception as e:
+                log(f"Bluesky login failed: {e}")
 
     def _parse_command(self, content: str) -> tuple[str, list[str]]:
         if not content:
@@ -277,63 +282,81 @@ class NMSBot(commands.Bot):
     def _should_queue_command(self, name: str) -> bool:
         return Config.USE_COMMAND_QUEUE or name in Config.FORCED_QUEUE_COMMANDS
 
-    async def event_ready(self):
-        log(f"Connected to Twitch as {self.nick}")
+    async def _start_runtime(self, channel, run_startup=True):
+        self._chat_context = channel
         start_state_poller()
 
         if self._worker_task is None:
             self._worker_task = asyncio.create_task(self._command_worker())
             log("Command worker started.")
 
-        asyncio.create_task(self._refresh_loop())
-        asyncio.create_task(self._start_schedulers())
+        if not self._dev_mode:
+            asyncio.create_task(self._refresh_loop())
+            asyncio.create_task(self._start_schedulers())
 
-        if self._teleport_loop_task is None:
-            self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
-            log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
+            if self._teleport_loop_task is None:
+                self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
+                log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
 
-        if self._shutdown_loop_task is None:
-            self._shutdown_loop_task = asyncio.create_task(self._nightly_shutdown_loop())
-            log("Nightly shutdown loop started.")
+            if self._shutdown_loop_task is None:
+                self._shutdown_loop_task = asyncio.create_task(self._nightly_shutdown_loop())
+                log("Nightly shutdown loop started.")
 
-        if self._bsky and self._bluesky_post_task is None:
-            self._bluesky_post_task = asyncio.create_task(self._fixed_bluesky_post_loop())
-            log("Bluesky scheduler: fixed-time post loop started.")
+            if self._bsky and self._bluesky_post_task is None:
+                self._bluesky_post_task = asyncio.create_task(self._fixed_bluesky_post_loop())
+                log("Bluesky scheduler: fixed-time post loop started.")
 
-        channel = self.get_channel(Config.TWITCH_CHANNEL)
-        if channel:
+        if run_startup:
             log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
             await self._do_help(channel)
             await self._do_status(channel)
 
+            await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
+            vote_task = self._teleport_vote.task
+            if vote_task:
+                await vote_task
+            await self._cmd_queue.join()
+
             await asyncio.to_thread(left_click)
             await asyncio.sleep(0.3)
-
             await self._do_walk(channel, announce=False)
             log("Startup sequence: complete.")
+
+    async def event_ready(self):
+        log(f"Connected to Twitch as {self.nick}")
+        channel = self.get_channel(Config.TWITCH_CHANNEL)
+        if channel:
+            await self._start_runtime(channel)
+
+    async def process_chat_message(self, ctx, content: str, message=None):
+        content = (content or "").strip()
+        if not content.startswith("!"):
+            return
+
+        name, args = self._parse_command(content)
+        if name == "yes":
+            await self._cast_vote(ctx, message, "yes", args[0] if args else "")
+        elif name == "no":
+            await self._cast_vote(ctx, message, "no", args[0] if args else "")
+        elif name == "help":
+            await self._do_help(ctx, args)
+        elif name == "status":
+            await self._do_status(ctx)
+        elif name:
+            if name in Config.PARAM_GUARD_CMDS:
+                await self._param_guard_cmd(ctx, name, args)
+            else:
+                await self._dispatch_nms_command(ctx, name, args)
 
     async def event_message(self, message):
         if message.echo:
             return
-        
+
         content = (message.content or "").strip()
         if content.startswith("!"):
-            name, args = self._parse_command(content)
             ctx = await self.get_context(message)
-            if name == "yes":
-                await self._cast_vote(ctx, message, "yes", args[0] if args else "")
-            elif name == "no":
-                await self._cast_vote(ctx, message, "no", args[0] if args else "")
-            elif name == "help":
-                await self._do_help(ctx, args)
-            elif name == "status":
-                await self._do_status(ctx)
-            elif name:
-                if name in Config.PARAM_GUARD_CMDS:
-                    await self._param_guard_cmd(ctx, name, args)
-                else:
-                    await self._dispatch_nms_command(ctx, name, args)
+            await self.process_chat_message(ctx, content, message)
             return
 
         await self.handle_commands(message)
@@ -436,7 +459,7 @@ class NMSBot(commands.Bot):
 
     async def _start_schedulers(self):
         """Spawn one independent loop per entry in Config.SCHEDULED_COMMANDS."""
-        channel = self.get_channel(Config.TWITCH_CHANNEL)
+        channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
         if not channel:
             return
         for interval_s, handler_name in Config.SCHEDULED_COMMANDS:
@@ -456,20 +479,19 @@ class NMSBot(commands.Bot):
                 log(f"Scheduler: '{handler_name}' failed: {e}")
 
     async def _teleport_loop(self):
-        """Every _teleport_interval_s (from startup) automatically teleport to a new planet."""
+        """Every _teleport_interval_s (from startup) start a vote to teleport to a new planet."""
         while True:
             sleep_s = max(0.0, self._next_teleport_time - time.time())
-            log(f"Teleport loop: sleeping {sleep_s:.0f}s until next auto-teleport.")
+            log(f"Teleport loop: sleeping {sleep_s:.0f}s until next teleport vote.")
             await asyncio.sleep(sleep_s)
 
-            channel = self.get_channel(Config.TWITCH_CHANNEL)
-            log("Teleport loop: firing scheduled teleport.")
+            channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
+            log("Teleport loop: starting scheduled teleport vote.")
             try:
                 if channel:
-                    await self._say(channel, "Warping to a new planet...")
-                await self._submit_command("teleport", [])
+                    await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
             except Exception as e:
-                log(f"Teleport loop: failed to queue teleport: {e}")
+                log(f"Teleport loop: failed to start teleport vote: {e}")
 
             self._next_teleport_time += self._teleport_interval_s
 
@@ -564,7 +586,7 @@ class NMSBot(commands.Bot):
             except Exception as e:
                 log(f"Bluesky scheduler failed: {e}")
 
-    async def _start_vote(self, ctx: commands.Context, name: str, args: list[str]):
+    async def _start_vote(self, ctx: commands.Context, name: str, args: list[str], starter=None):
         is_teleport = name == "teleport"
         vote = self._teleport_vote if is_teleport else self._vote
         duration = Config.TELEPORT_VOTING_DURATION if is_teleport else Config.VOTING_DURATION
@@ -578,7 +600,7 @@ class NMSBot(commands.Bot):
         vote.args_raw = " ".join(args)
         vote.votes = {}
 
-        starter = (ctx.author.name or "").lower()
+        starter = (starter or ctx.author.name or "").lower()
         if starter:
             vote.votes[starter] = "yes"
 
@@ -730,6 +752,8 @@ class NMSBot(commands.Bot):
 
     async def _update_stream_info(self, title: str = ""):
         """Update the Twitch stream title and tags via the Helix API."""
+        if self._dev_mode:
+            return
         try:
             client_id = Config.get_client_id()
             oauth_token = self._access_token

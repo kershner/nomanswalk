@@ -20,7 +20,7 @@ WAIT_FOR_GAME_LOAD = 90
 
 VENV_PY = os.path.join(BASE_DIR, "venv", "Scripts", "python.exe")
 
-DEV_SERVER_CMD = [VENV_PY, "dev_server.py"]
+DEV_SERVER_CMD = [VENV_PY, "dev_server.py", "--startup"]
 TWITCH_BOT_CMD = [VENV_PY, "nms_twitch_bot.py"]
 DEV_SERVER_URL = "http://127.0.0.1:5050"
 
@@ -294,9 +294,6 @@ def main():
 
     log("Disabling HUD via hud_toggle mod...")
     send_key("f5", 0.1)
-
-    log("Teleporting to starting planet...")
-    teleport_to_new_planet()
 
     log("Toggling music with the 'm' key...")
     send_key("m", 0.1)

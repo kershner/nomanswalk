@@ -186,43 +186,60 @@ const log    = document.getElementById('log');
 const submit = document.getElementById('submit');
 const empty  = document.getElementById('empty-msg');
 
+let chatCursor = 0;
+let polling = false;
+
+function appendResult(text, error = false) {
+  if (empty && empty.isConnected) empty.remove();
+  const el = document.createElement('div');
+  el.className = 'log-result ' + (error ? 'err' : 'ok');
+  el.textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function pollChat() {
+  if (polling) return;
+  polling = true;
+  try {
+    const res = await fetch('/chat?after=' + chatCursor);
+    const data = await res.json();
+    data.messages.forEach(message => appendResult(message));
+    chatCursor = data.cursor;
+  } catch(e) {
+  } finally {
+    polling = false;
+  }
+}
+
 async function sendCommand() {
   const raw = input.value.trim();
   input.value = '';
   if (!raw) return;
 
-  if (empty) empty.remove();
+  if (empty && empty.isConnected) empty.remove();
 
   const cmdEl = document.createElement('div');
   cmdEl.className = 'log-cmd';
   cmdEl.textContent = raw;
   log.appendChild(cmdEl);
 
-  const resultEl = document.createElement('div');
-  resultEl.className = 'log-result';
-
   try {
-    const res  = await fetch('/cmd/' + encodeURIComponent(raw));
+    const res = await fetch('/cmd/' + encodeURIComponent(raw));
     const data = await res.json();
-    if (data.ok) {
-      resultEl.classList.add('ok');
-      resultEl.textContent = 'OK';
-    } else {
-      resultEl.classList.add('err');
-      resultEl.textContent = data.error || 'ERROR';
-    }
+    if (!data.ok) appendResult(data.error || 'ERROR', true);
   } catch(e) {
-    resultEl.classList.add('err');
-    resultEl.textContent = 'network error';
+    appendResult('network error', true);
   }
 
-  log.appendChild(resultEl);
-  log.scrollTop = log.scrollHeight;
+  await pollChat();
   input.focus();
 }
 
 submit.addEventListener('click', sendCommand);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendCommand(); });
+setInterval(pollChat, 500);
+pollChat();
 </script>
 </body>
 </html>
