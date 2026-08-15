@@ -768,6 +768,8 @@ def dance(args=None):
 
 
 def inventory(args=None):
+    if _boost_enabled:
+        _set_boost(False)
     send_key("tab", 0.1)
 
 
