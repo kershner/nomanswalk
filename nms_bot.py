@@ -46,8 +46,7 @@ BLOCKED_COMMANDS_BY_STATE = {
     },
 }
 
-_last_walk_t = 0.0
-_last_stop_t = 0.0
+_autowalk_enabled = False
 _last_xy = None
 _last_move_t = 0.0
 _stuck = False
@@ -270,6 +269,8 @@ class NMSState:
 
 
 def poll_state():
+    global _autowalk_enabled
+
     while True:
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -281,10 +282,12 @@ def poll_state():
             NMSState.update(state, ts, data)
             update_daily_movement(state, data)
 
-            if state == "ON_FOOT" and _cruise_enabled:
+            if state != "ON_FOOT":
+                _autowalk_enabled = False
+            elif _cruise_enabled:
                 _set_cruise(False)
 
-            check_if_stuck(state, data, ts)
+            check_if_stuck(state, data)
 
         except FileNotFoundError:
             log(f"State file not found: {STATE_FILE}")
@@ -294,20 +297,24 @@ def poll_state():
         time.sleep(STATE_POLL_INTERVAL)
 
 
-def check_if_stuck(state, data, timestamp):
+def _reset_stuck():
+    global _last_xy, _last_move_t, _stuck, _stuck_last_cmd, _last_unstuck_t
+    _last_xy = None
+    _last_move_t = 0.0
+    _stuck = False
+    _stuck_last_cmd = None
+    _last_unstuck_t = 0.0
+
+
+def check_if_stuck(state, data):
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
+
+    if state != "ON_FOOT" or not is_walking():
+        _reset_stuck()
+        return
 
     if is_planet_loading():
         return  # ignore movement data while a new planet is loading
-
-    if not is_walking():
-        _stuck = False
-        _last_xy = None
-        _stuck_last_cmd = None
-        return
-
-    if state != "ON_FOOT":
-        return
 
     pos = (data.get("environment") or {}).get("player_position") or {}
     x, y, z = pos.get("x"), pos.get("y"), pos.get("z")
@@ -342,16 +349,20 @@ def check_if_stuck(state, data, timestamp):
 
     if (not _stuck) and elapsed >= STUCK_SECONDS:
         _stuck = True
-        _do_unstuck(timestamp)
+        _do_unstuck()
         return
 
     if _stuck and elapsed >= STUCK_SECONDS:
-        _do_unstuck(timestamp)
+        _do_unstuck()
         return
 
 
-def _do_unstuck(timestamp):
+def _do_unstuck():
     global _stuck_last_cmd, _last_move_t, _last_unstuck_t
+
+    movement_generation = get_movement_generation()
+    if not is_walking() or NMSState.get() != "ON_FOOT":
+        return
 
     now = time.time()
     if now - _last_unstuck_t < STUCK_COOLDOWN:
@@ -368,7 +379,7 @@ def _do_unstuck(timestamp):
 
     if _stuck_last_cmd == "jet":
         log(f"STUCK: still stuck after jet, trying right 100")
-        COMMANDS["right"].func(["100"])
+        COMMANDS["right"].func(["100"], movement_generation)
         _stuck_last_cmd = "right"
     elif _stuck_last_cmd == "right":
         log(f"STUCK: still stuck after right, trying spam_e")
@@ -376,12 +387,12 @@ def _do_unstuck(timestamp):
         _stuck_last_cmd = "spam_e"
     else:
         log(f"STUCK: trying jet()")
-        COMMANDS["jet"].func()
+        COMMANDS["jet"].func(None, movement_generation)
         _stuck_last_cmd = "jet"
 
 
 def is_walking() -> bool:
-    return _last_walk_t > _last_stop_t
+    return _autowalk_enabled
 
 
 def start_state_poller():
@@ -483,34 +494,37 @@ def sky(args=None):
     
 
 def walk(args=None, movement_generation=None):
-    global _last_walk_t, _last_move_t, _last_xy
+    global _autowalk_enabled, _last_move_t, _last_xy
     """Toggle autowalk (backslash)"""
     if _movement_cancelled(movement_generation):
         return
     _hold_movement_key("k", 0.1, movement_generation)
     if _movement_cancelled(movement_generation):
         return
-    _last_walk_t = time.time()
+    _autowalk_enabled = not _autowalk_enabled
     _last_move_t = time.time()
     _last_xy = None
 
 
 def stop(args=None):
-    global _last_stop_t, _cruise_enabled
+    global _autowalk_enabled, _cruise_enabled
     """Stop all movement and end autowalk/cruise."""
+    _autowalk_enabled = False
     _cruise_enabled = False
+    _reset_stuck()
     send_key("w", 0.1)
-    _last_stop_t = time.time()
 
 
 def _set_cruise(enabled: bool, movement_generation=None):
-    global _cruise_enabled
+    global _autowalk_enabled, _cruise_enabled
     if enabled:
         if _movement_cancelled(movement_generation):
             return
         hwnd, _ = focus_nms()
         if not hwnd or _movement_cancelled(movement_generation):
             return
+        _autowalk_enabled = False
+        _reset_stuck()
         keyboard.press("w")
     else:
         keyboard.release("w")
@@ -606,16 +620,20 @@ def left_click_cmd(args=None):
 
 
 def right_click_cmd(args=None):
+    global _autowalk_enabled
     """Click the right mouse button once"""
+    _autowalk_enabled = False
+    _reset_stuck()
     focus_nms()
     right_mouse_click()
 
 
 def coords(args=None):
+    global _autowalk_enabled
     """CTRL + 2 to show photo mode for 10 seconds (shows coordinates)"""
     was_walking = is_walking()
-    global _last_stop_t
-    _last_stop_t = time.time()  # pause stuck-checking for the duration
+    _autowalk_enabled = False
+    _reset_stuck()
 
     focus_nms()
     send_key("2", 0.1, ["ctrl"])
@@ -663,18 +681,13 @@ def gravity(args=None):
 
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
-    global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
     set_planet_loading(True)
     try:
         send_key(key, 0.1)
         log(f"{label}: waiting {PLANET_LOAD_SECONDS}s for planet to load...")
         time.sleep(PLANET_LOAD_SECONDS)
 
-        # Reset stuck-checker state so stale position data doesn't fire immediately
-        _last_xy = None
-        _last_move_t = time.time()
-        _stuck = False
-        _stuck_last_cmd = None
+        _reset_stuck()
         log(f"{label}: planet load wait complete.")
         walk()
     finally:
