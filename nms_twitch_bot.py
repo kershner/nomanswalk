@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading
+from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from datetime import datetime, timedelta
@@ -335,6 +335,9 @@ class NMSBot(commands.Bot):
             return
 
         name, args = self._parse_command(content)
+        if name in {"yes", "no", "help", "status"} or name in COMMANDS:
+            record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
+
         if name == "yes":
             await self._cast_vote(ctx, message, "yes", args[0] if args else "")
         elif name == "no":

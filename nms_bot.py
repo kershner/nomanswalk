@@ -29,6 +29,8 @@ STUCK_SECONDS = 10       # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
+DAILY_STATS_FILE = os.path.join(BASE_DIR, "daily_stats.json")
+MAX_WALK_SAMPLE_DISTANCE = 500.0
 
 
 BLOCKED_COMMANDS_BY_STATE = {
@@ -53,6 +55,132 @@ _stuck = False
 _stuck_last_cmd = None
 _last_unstuck_t = 0.0
 _cruise_enabled = False
+
+_daily_stats_lock = threading.Lock()
+_daily_stats = {}
+_daily_last_position = None
+_daily_last_planet = None
+_daily_last_state = None
+
+
+def _today():
+    return time.strftime("%Y-%m-%d")
+
+
+def _new_daily_stats():
+    return {
+        "date": _today(),
+        "distance_walked": 0.0,
+        "planets": [],
+        "walkers": [],
+        "commands": 0,
+    }
+
+
+def _save_daily_stats():
+    try:
+        with open(DAILY_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_daily_stats, f, indent=2)
+    except Exception as e:
+        log(f"Daily stats save failed: {e}")
+
+
+def _ensure_daily_stats():
+    global _daily_stats, _daily_last_position, _daily_last_planet, _daily_last_state
+    if _daily_stats.get("date") != _today():
+        _daily_stats = _new_daily_stats()
+        _daily_last_position = None
+        _daily_last_planet = None
+        _daily_last_state = None
+        _save_daily_stats()
+
+
+def _load_daily_stats():
+    global _daily_stats
+    try:
+        with open(DAILY_STATS_FILE, "r", encoding="utf-8") as f:
+            _daily_stats = json.load(f)
+    except Exception:
+        _daily_stats = _new_daily_stats()
+    _ensure_daily_stats()
+
+
+def _planet_key(data):
+    ua = data.get("universe_address") or {}
+    values = (
+        ua.get("reality_index"),
+        ua.get("voxel_x"),
+        ua.get("voxel_y"),
+        ua.get("voxel_z"),
+        ua.get("solar_system_index"),
+        ua.get("planet_index"),
+    )
+    if any(v is None for v in values):
+        return None
+    return ":".join(str(v) for v in values)
+
+
+def update_daily_movement(state, data):
+    global _daily_last_position, _daily_last_planet, _daily_last_state
+
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        planet_key = _planet_key(data)
+        env = data.get("environment") or {}
+
+        if planet_key and (state == "ON_FOOT" or env.get("inside_atmosphere") is True):
+            if planet_key not in _daily_stats["planets"]:
+                _daily_stats["planets"].append(planet_key)
+                _save_daily_stats()
+
+        pos = env.get("player_position") or {}
+        xyz = (pos.get("x"), pos.get("y"), pos.get("z"))
+        valid_pos = all(isinstance(v, (int, float)) for v in xyz)
+        current = tuple(float(v) for v in xyz) if valid_pos else None
+
+        if (
+            current is not None
+            and _daily_last_position is not None
+            and state == "ON_FOOT"
+            and _daily_last_state == "ON_FOOT"
+            and planet_key
+            and planet_key == _daily_last_planet
+            and not is_planet_loading()
+        ):
+            distance = math.sqrt(sum((a - b) ** 2 for a, b in zip(current, _daily_last_position)))
+            if 0.0 < distance <= MAX_WALK_SAMPLE_DISTANCE:
+                _daily_stats["distance_walked"] += distance
+                _save_daily_stats()
+
+        _daily_last_position = current
+        _daily_last_planet = planet_key
+        _daily_last_state = state
+
+
+def record_daily_command(username):
+    username = (username or "").strip().lower()
+    if not username:
+        return
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        _daily_stats["commands"] += 1
+        if username not in _daily_stats["walkers"]:
+            _daily_stats["walkers"].append(username)
+        _save_daily_stats()
+
+
+def get_daily_stats():
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        return {
+            "distance_walked": float(_daily_stats.get("distance_walked", 0.0)),
+            "planets_visited": len(_daily_stats.get("planets", [])),
+            "walkers": len(_daily_stats.get("walkers", [])),
+            "commands": int(_daily_stats.get("commands", 0)),
+        }
+
+
+_load_daily_stats()
 
 # Planet-load lockout — set during teleport to pause stuck-checking and
 # block new commands in the Twitch bot.
@@ -117,6 +245,7 @@ def poll_state():
             raw_state = data.get("state", "UNKNOWN")
             state = "ON_FOOT" if raw_state == "ON_FOOT" else "NOT_ON_FOOT"
             NMSState.update(state, ts, data)
+            update_daily_movement(state, data)
 
             if state == "ON_FOOT" and _cruise_enabled:
                 _set_cruise(False)

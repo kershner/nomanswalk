@@ -106,44 +106,60 @@ def focus_nms():
 
 def get_status_text(countdown: str = "") -> dict:
     try:
-        from nms_bot import STATE_FILE
+        from nms_bot import STATE_FILE, get_daily_stats
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
 
         planet = state.get("planet", {})
-        
+        env = state.get("environment") or {}
+        raw_state = state.get("state", "UNKNOWN")
+        in_space = raw_state != "ON_FOOT" and env.get("inside_atmosphere") is False
+
         name = planet.get("name", "unknown")
-        biome = planet.get('biome', 'unknown')
+        biome = planet.get("biome", "unknown")
         galaxy = f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')}"
-        size = f"Size: {planet.get('planet_size', 'unknown')}"
-        rings = "Ringed" if planet.get("has_rings") else ""
 
-        weather = planet.get("weather_type", "")
-        weather = f"Weather: {weather}" if weather else ""
+        stats = get_daily_stats()
+        today = (
+            f"Today: {stats['distance_walked']:,.0f}u walked • "
+            f"{stats['planets_visited']} {'planet' if stats['planets_visited'] == 1 else 'planets'} visited • "
+            f"{stats['walkers']} {'walker' if stats['walkers'] == 1 else 'walkers'} • "
+            f"{stats['commands']} {'command' if stats['commands'] == 1 else 'commands'}"
+        )
 
-        flora = planet.get("life", "")
-        flora = f"Flora: {flora}" if flora else ""
-
-        fauna = planet.get("creature_life", "")
-        fauna = f"Fauna: {fauna}" if fauna else ""
-
-        mods = state.get("mods", {})
-        gravity = f"Gravity: {mods.get('gravity', 'normal').title()}"
-        storm = f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}"
-        time_status = f"Time: {mods.get('time', 'normal').title()}"
-
-        planet_stats = " • ".join(filter(None, [
-            galaxy, size, rings, weather, flora, fauna, gravity, storm, time_status
-        ]))
-
-        main_parts = [f"Walking across {name} ({biome})"]
+        main_parts = ["In space" if in_space else f"Walking across {name} ({biome})"]
         if countdown:
-            main_parts.append(f"New planet in {countdown}")
+            main_parts.append(f"Next planet vote in {countdown}")
         main_status = " • ".join(main_parts)
+
+        if in_space:
+            details = f"{galaxy} • {today}"
+        else:
+            size = f"Size: {planet.get('planet_size', 'unknown')}"
+            rings = "Ringed" if planet.get("has_rings") else ""
+
+            weather = planet.get("weather_type", "")
+            weather = f"Weather: {weather}" if weather else ""
+
+            flora = planet.get("life", "")
+            flora = f"Flora: {flora}" if flora else ""
+
+            fauna = planet.get("creature_life", "")
+            fauna = f"Fauna: {fauna}" if fauna else ""
+
+            mods = state.get("mods", {})
+            gravity = f"Gravity: {mods.get('gravity', 'normal').title()}"
+            storm = f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}"
+            time_status = f"Time: {mods.get('time', 'normal').title()}"
+
+            planet_stats = " • ".join(filter(None, [
+                galaxy, size, rings, weather, flora, fauna, gravity, storm, time_status
+            ]))
+            details = f"{planet_stats} • {today}"
 
         return {
             "main": main_status,
-            "details": planet_stats,
+            "details": details,
         }
 
     except Exception as e:
