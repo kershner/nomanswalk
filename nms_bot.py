@@ -31,18 +31,24 @@ STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
 RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
 MAX_WALK_SAMPLE_DISTANCE = 500.0
+QUICKSLOT_TIMEOUT = 30
+QUICKSLOT_COOLDOWN = 5
 
 
 BLOCKED_COMMANDS_BY_STATE = {
     "ON_FOOT": {
         "launch",
         "land",
+        "anomaly",
     },
     "NOT_ON_FOOT": {
         "dig",
         "sky",
         "walk",
         "coords",
+        "ship",
+        "pet",
+        "dance",
     },
 }
 
@@ -60,6 +66,10 @@ MOVEMENT_COMMANDS = {
 }
 _movement_generation = 0
 _movement_generation_lock = threading.Lock()
+_quickslot_lock = threading.Lock()
+_active_quickslot = None
+_active_quickslot_t = 0.0
+_quickslot_cooldown_until = 0.0
 
 _daily_stats_lock = threading.Lock()
 _daily_stats = {}
@@ -226,6 +236,8 @@ def get_runtime_game_state():
 
 
 def set_planet_loading(val: bool):
+    if val:
+        clear_active_quickslot("planet loading")
     set_runtime_game_state(planet_loading=bool(val))
     log(f"Planet loading: {val}")
 
@@ -253,6 +265,7 @@ class NMSState:
         with cls._lock:
             if state != cls._current:
                 log(f"State changed: {cls._current} -> {state}")
+                clear_active_quickslot("game state changed")
                 cls._current = state
             cls._timestamp = timestamp
             cls._data = data
@@ -459,6 +472,49 @@ def _movement_cancelled(generation: int | None) -> bool:
     return generation is not None and generation != get_movement_generation()
 
 
+def get_active_quickslot():
+    global _active_quickslot, _active_quickslot_t
+    with _quickslot_lock:
+        if _active_quickslot and time.monotonic() - _active_quickslot_t >= QUICKSLOT_TIMEOUT:
+            log(f"Quickslot lock expired: {_active_quickslot}")
+            _active_quickslot = None
+            _active_quickslot_t = 0.0
+        return _active_quickslot
+
+
+def clear_active_quickslot(reason=None):
+    global _active_quickslot, _active_quickslot_t
+    with _quickslot_lock:
+        if _active_quickslot and reason:
+            log(f"Quickslot lock cleared: {_active_quickslot} ({reason})")
+        _active_quickslot = None
+        _active_quickslot_t = 0.0
+
+
+def activate_quickslot(name):
+    global _active_quickslot, _active_quickslot_t
+    with _quickslot_lock:
+        _active_quickslot = name
+        _active_quickslot_t = time.monotonic()
+
+
+def start_quickslot_cooldown():
+    global _quickslot_cooldown_until
+    with _quickslot_lock:
+        _quickslot_cooldown_until = time.monotonic() + QUICKSLOT_COOLDOWN
+
+
+def is_quickslot_cooldown():
+    with _quickslot_lock:
+        return time.monotonic() < _quickslot_cooldown_until
+
+
+def trigger_quickslot(slot: int, name=None):
+    if name:
+        activate_quickslot(name)
+    send_key(str(slot), 0.1, ["ctrl"])
+
+
 def _hold_movement_key(key: str, duration: float, generation: int | None):
     if _movement_cancelled(generation):
         return
@@ -509,6 +565,7 @@ def walk(args=None, movement_generation=None):
 def stop(args=None):
     global _autowalk_enabled, _cruise_enabled
     """Stop all movement and end autowalk/cruise."""
+    clear_active_quickslot("stop")
     _autowalk_enabled = False
     _cruise_enabled = False
     _reset_stuck()
@@ -583,7 +640,7 @@ def right(args=None, movement_generation=None):
 
 
 def camera(args=None):
-    send_key("0", 0.1, ["ctrl"])
+    trigger_quickslot(0)
 
 
 def spam_e(args=None):
@@ -617,11 +674,15 @@ def land(args=None):
 def left_click_cmd(args=None):
     """Click the left mouse button once"""
     left_click()
+    clear_active_quickslot("left click")
 
 
 def right_click_cmd(args=None):
     global _autowalk_enabled
     """Click the right mouse button once"""
+    if get_active_quickslot():
+        start_quickslot_cooldown()
+    clear_active_quickslot("right click")
     _autowalk_enabled = False
     _reset_stuck()
     focus_nms()
@@ -636,7 +697,7 @@ def coords(args=None):
     _reset_stuck()
 
     focus_nms()
-    send_key("2", 0.1, ["ctrl"])
+    trigger_quickslot(2)
     time.sleep(10)
     right_mouse_click()
 
@@ -644,9 +705,20 @@ def coords(args=None):
         walk()  # right_mouse_click() stops autowalk in-game, so re-engage it
 
 
-def summon_ship(args=None):
-    """Summon ship with CTRL + 1"""
-    send_key("1", 0.1, ["ctrl"])
+def ship(args=None):
+    trigger_quickslot(1, "ship")
+
+
+def anomaly(args=None):
+    trigger_quickslot(3, "anomaly")
+
+
+def pet(args=None):
+    trigger_quickslot(4, "pet")
+
+
+def dance(args=None):
+    trigger_quickslot(5)
 
 
 def music(args=None):
@@ -780,7 +852,10 @@ COMMANDS: dict[str, Command] = {
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
     "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
-    "summon_ship": Command(summon_ship, "Open the quick menu with the Walker's ship selected."),
+    "ship": Command(ship, "Select the Walker's ship placement quickslot."),
+    "anomaly": Command(anomaly, "Select the Space Anomaly placement quickslot."),
+    "pet": Command(pet, "Select the Walker's pet placement quickslot."),
+    "dance": Command(dance, "Make the Walker dance."),
     "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
     "day": Command(day, "Force the current planet to daytime."),
     "night": Command(night, "Force the current planet to nighttime."),
