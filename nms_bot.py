@@ -42,7 +42,6 @@ BLOCKED_COMMANDS_BY_STATE = {
         "dig",
         "sky",
         "walk",
-        "stop",
         "coords",
     },
 }
@@ -55,6 +54,13 @@ _stuck = False
 _stuck_last_cmd = None
 _last_unstuck_t = 0.0
 _cruise_enabled = False
+
+MOVEMENT_COMMANDS = {
+    "jet", "walk", "cruise", "forward", "back",
+    "up", "down", "left", "right", "launch",
+}
+_movement_generation = 0
+_movement_generation_lock = threading.Lock()
 
 _daily_stats_lock = threading.Lock()
 _daily_stats = {}
@@ -422,9 +428,48 @@ def right_mouse_click():
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
-def jet(args=None):
+def get_movement_generation() -> int:
+    with _movement_generation_lock:
+        return _movement_generation
+
+
+def cancel_movement() -> int:
+    global _movement_generation
+    with _movement_generation_lock:
+        _movement_generation += 1
+        generation = _movement_generation
+
+    for key in ("w", "s", "space"):
+        keyboard.release(key)
+    return generation
+
+
+def _movement_cancelled(generation: int | None) -> bool:
+    return generation is not None and generation != get_movement_generation()
+
+
+def _hold_movement_key(key: str, duration: float, generation: int | None):
+    if _movement_cancelled(generation):
+        return
+
+    hwnd, _ = focus_nms()
+    if not hwnd or _movement_cancelled(generation):
+        return
+
+    keyboard.press(key)
+    try:
+        end = time.monotonic() + max(0.0, float(duration))
+        while time.monotonic() < end:
+            if _movement_cancelled(generation):
+                return
+            time.sleep(min(0.05, end - time.monotonic()))
+    finally:
+        keyboard.release(key)
+
+
+def jet(args=None, movement_generation=None):
     """Tap spacebar (jetpack burst)"""
-    send_key("space", 2.5)
+    _hold_movement_key("space", 2.5, movement_generation)
 
 
 def dig(args=None):
@@ -437,27 +482,34 @@ def sky(args=None):
     send_key("y", 0.1)
     
 
-def walk(args=None):
+def walk(args=None, movement_generation=None):
     global _last_walk_t, _last_move_t, _last_xy
     """Toggle autowalk (backslash)"""
-    send_key("k", 0.1)
+    if _movement_cancelled(movement_generation):
+        return
+    _hold_movement_key("k", 0.1, movement_generation)
+    if _movement_cancelled(movement_generation):
+        return
     _last_walk_t = time.time()
-    _last_move_t = time.time()   # reset stuck timer so it doesn't fire immediately
-    _last_xy = None              # reset position baseline
+    _last_move_t = time.time()
+    _last_xy = None
 
 
 def stop(args=None):
-    global _last_stop_t
-    """Send "w" key to end autowalk"""
+    global _last_stop_t, _cruise_enabled
+    """Stop all movement and end autowalk/cruise."""
+    _cruise_enabled = False
     send_key("w", 0.1)
     _last_stop_t = time.time()
-    
 
-def _set_cruise(enabled: bool):
+
+def _set_cruise(enabled: bool, movement_generation=None):
     global _cruise_enabled
     if enabled:
+        if _movement_cancelled(movement_generation):
+            return
         hwnd, _ = focus_nms()
-        if not hwnd:
+        if not hwnd or _movement_cancelled(movement_generation):
             return
         keyboard.press("w")
     else:
@@ -465,57 +517,55 @@ def _set_cruise(enabled: bool):
     _cruise_enabled = enabled
 
 
-def cruise(args=None):
+def cruise(args=None, movement_generation=None):
     """Toggle holding W while not on foot."""
-    _set_cruise(not _cruise_enabled)
+    if _movement_cancelled(movement_generation):
+        return
+    _set_cruise(not _cruise_enabled, movement_generation)
 
 
-def forward(args=None):
+def forward(args=None, movement_generation=None):
     """Hold W for ARG * SECONDS_PER_STEP seconds"""
     n = _clamp(args[0] if args else 1)
-    send_key("w", n * SECONDS_PER_STEP)
+    _hold_movement_key("w", n * SECONDS_PER_STEP, movement_generation)
 
 
-def back(args=None):
+def back(args=None, movement_generation=None):
     """Hold S for ARG * SECONDS_PER_STEP seconds"""
     n = _clamp(args[0] if args else 1)
-    send_key("s", n * SECONDS_PER_STEP)
+    _hold_movement_key("s", n * SECONDS_PER_STEP, movement_generation)
 
 
-def up(args=None):
+def _move_mouse_steps(dx: int, dy: int, args, movement_generation):
+    n = _clamp(args[0] if args else 1)
+    if _movement_cancelled(movement_generation):
+        return
+    focus_nms()
+    for _ in range(n):
+        if _movement_cancelled(movement_generation):
+            return
+        move_mouse(dx, dy)
+        time.sleep(MOUSE_DELAY)
+
+
+def up(args=None, movement_generation=None):
     """Move mouse up ARG steps"""
-    n = _clamp(args[0] if args else 1)
-    focus_nms()
-    for _ in range(n):
-        move_mouse(0, -MOUSE_STEP)
-        time.sleep(MOUSE_DELAY)
+    _move_mouse_steps(0, -MOUSE_STEP, args, movement_generation)
 
 
-def down(args=None):
+def down(args=None, movement_generation=None):
     """Move mouse down ARG steps"""
-    n = _clamp(args[0] if args else 1)
-    focus_nms()
-    for _ in range(n):
-        move_mouse(0, MOUSE_STEP)
-        time.sleep(MOUSE_DELAY)
+    _move_mouse_steps(0, MOUSE_STEP, args, movement_generation)
 
 
-def left(args=None):
+def left(args=None, movement_generation=None):
     """Move mouse left ARG steps"""
-    n = _clamp(args[0] if args else 1)
-    focus_nms()
-    for _ in range(n):
-        move_mouse(-MOUSE_STEP, 0)
-        time.sleep(MOUSE_DELAY)
+    _move_mouse_steps(-MOUSE_STEP, 0, args, movement_generation)
 
 
-def right(args=None):
+def right(args=None, movement_generation=None):
     """Move mouse right ARG steps"""
-    n = _clamp(args[0] if args else 1)
-    focus_nms()
-    for _ in range(n):
-        move_mouse(MOUSE_STEP, 0)
-        time.sleep(MOUSE_DELAY)
+    _move_mouse_steps(MOUSE_STEP, 0, args, movement_generation)
 
 
 def camera(args=None):
@@ -540,9 +590,9 @@ def hold_e(args=None):
     send_key("e", 5)
 
 
-def launch(args=None):
+def launch(args=None, movement_generation=None):
     """Hold W for 5 seconds"""
-    send_key("w", 5)
+    _hold_movement_key("w", 5, movement_generation)
 
 
 def land(args=None):
@@ -698,7 +748,7 @@ COMMANDS: dict[str, Command] = {
     "dig":     Command(dig,     "Hold the left mouse button for 10 seconds to dig terrain.", aliases=()),
     "sky":     Command(sky,     "Drop the Walker from high above the planet."),
     "walk":    Command(walk,    "Toggle continuous forward walking on/off.", aliases=("w",)),
-    "stop":    Command(stop,    "Tap the forward key once to stop continuous walking.", aliases=("s",)),
+    "stop":    Command(stop,    "Stop all active and queued movement immediately.", aliases=("s",)),
     "cruise":  Command(cruise,  "While in a ship, toggle holding the forward key continuously on/off.", aliases=("engage",)),
     "forward": Command(forward, "Hold the forward key for 1-100 seconds. e.g. !forward 3 holds it for 3 seconds.", aliases=("f",)),
     "back":    Command(back,    "Hold the backward key for 1-100 seconds. e.g. !back 3 holds it for 3 seconds.", aliases=("b",)),

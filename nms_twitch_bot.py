@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, cancel_movement, get_canonical_command_name, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from datetime import datetime, timedelta
@@ -67,8 +67,8 @@ class Config:
     COMMAND_FEEDBACK = {
         "walk": "Autowalk toggled.",
         "w": "Autowalk toggled.",
-        "stop": "Autowalk stopped.",
-        "s": "Autowalk stopped.",
+        "stop": "All movement stopped.",
+        "s": "All movement stopped.",
         "cruise": "Cruise toggled.",
         "engage": "Cruise toggled.",
         "camera": "Camera toggled.",
@@ -236,7 +236,7 @@ class NMSBot(commands.Bot):
         self._teleport_vote = VoteState()
         self._teleport_vote.reset()
 
-        self._cmd_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
+        self._cmd_queue: asyncio.Queue[tuple[str, list[str], int | None]] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_command_tasks: set[asyncio.Task] = set()
         self._lockout_command: Optional[str] = None
@@ -402,7 +402,7 @@ class NMSBot(commands.Bot):
         await ctx.send(text)
         await asyncio.sleep(Config.CHAT_DELAY)
 
-    async def _run_command(self, name: str, args: list[str]):
+    async def _run_command(self, name: str, args: list[str], movement_generation: int | None = None):
         func = COMMANDS.get(name)
         if not func:
             log(f"Command worker: no func found for !{name}")
@@ -414,7 +414,11 @@ class NMSBot(commands.Bot):
 
         try:
             log(f"Command worker: executing !{name} {args}")
-            await asyncio.to_thread(func.func, args)
+            canonical_name = get_canonical_command_name(name)
+            if canonical_name in MOVEMENT_COMMANDS:
+                await asyncio.to_thread(func.func, args, movement_generation)
+            else:
+                await asyncio.to_thread(func.func, args)
             log(f"Command worker: !{name} complete.")
         except Exception as e:
             log(f"Command failed: !{name} {args} ({e})")
@@ -422,16 +426,16 @@ class NMSBot(commands.Bot):
             if lockout:
                 self._lockout_command = None
 
-    async def _start_immediate_command(self, name: str, args: list[str]):
-        task = asyncio.create_task(self._run_command(name, args))
+    async def _start_immediate_command(self, name: str, args: list[str], movement_generation: int | None = None):
+        task = asyncio.create_task(self._run_command(name, args, movement_generation))
         self._active_command_tasks.add(task)
         task.add_done_callback(self._active_command_tasks.discard)
 
     async def _command_worker(self):
         while True:
-            name, args = await self._cmd_queue.get()
+            name, args, movement_generation = await self._cmd_queue.get()
             try:
-                await self._run_command(name, args)
+                await self._run_command(name, args, movement_generation)
             finally:
                 self._cmd_queue.task_done()
 
@@ -457,14 +461,25 @@ class NMSBot(commands.Bot):
         await self._dispatch_nms_command(ctx, name, args)
     
     
-    async def _enqueue_command(self, name: str, args: list[str]):
-        await self._cmd_queue.put((name, args))
+    async def _enqueue_command(self, name: str, args: list[str], movement_generation: int | None = None):
+        await self._cmd_queue.put((name, args, movement_generation))
 
     async def _submit_command(self, name: str, args: list[str]):
-        if self._should_queue_command(name):
-            await self._enqueue_command(name, args)
-        else:
+        canonical_name = get_canonical_command_name(name)
+
+        if canonical_name == "stop":
+            cancel_movement()
             await self._start_immediate_command(name, args)
+            return
+
+        movement_generation = (
+            get_movement_generation() if canonical_name in MOVEMENT_COMMANDS else None
+        )
+
+        if self._should_queue_command(name):
+            await self._enqueue_command(name, args, movement_generation)
+        else:
+            await self._start_immediate_command(name, args, movement_generation)
 
     async def _refresh_loop(self):
         while True:
