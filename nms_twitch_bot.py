@@ -650,7 +650,8 @@ class NMSBot(commands.Bot):
                 help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
                 if passed:
-                    await self._say(ctx, f"Vote passed! ({yes}-{no}) • {help_text}")
+                    passed_text = f"Destination: {teleport_text}" if is_teleport else help_text
+                    await self._say(ctx, f"Vote passed! ({yes}-{no}) • {passed_text}")
                     await self._submit_command(name, args)
                     feedback = Config.COMMAND_FEEDBACK.get(name)
                     if feedback:
@@ -837,28 +838,30 @@ class NMSBot(commands.Bot):
             return
 
         if name == "teleport" and args:
-            address = args[0].strip().upper() if len(args) in (1, 2) else ""
-            valid_address = (
-                len(address) == 12
-                and address[0] in "123456"
-                and all(c in "0123456789ABCDEF" for c in address)
-            )
-            valid_galaxy = True
+            if len(args) not in (1, 2):
+                await self._say(ctx, "Usage: !teleport <12-character planet address> [galaxy 1-255]")
+                return
+
+            address = args[0].strip().upper()
+            if (
+                len(address) != 12
+                or address[0] not in "123456"
+                or any(c not in "0123456789ABCDEF" for c in address)
+            ):
+                await self._say(ctx, "Invalid planet address. It must be 12 hexadecimal characters and start with 1-6.")
+                return
+
             if len(args) == 2:
                 try:
                     galaxy = int(args[1])
-                    valid_galaxy = 1 <= galaxy <= 255
                 except ValueError:
-                    valid_galaxy = False
-
-            if not valid_address or not valid_galaxy:
-                await self._say(
-                    ctx,
-                    "Usage: !teleport <12-character planet address> [galaxy 1-255], e.g. !teleport 415AFC31FC03 10",
-                )
-                return
-
-            args = [address] + ([str(galaxy)] if len(args) == 2 else [])
+                    galaxy = 0
+                if not 1 <= galaxy <= 255:
+                    await self._say(ctx, "Invalid galaxy. It must be a number from 1 to 255.")
+                    return
+                args = [address, str(galaxy)]
+            else:
+                args = [address]
 
         if is_planet_loading():
             await self._say(ctx, "Planet loading — please wait before sending commands.")
