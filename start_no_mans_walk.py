@@ -1,5 +1,5 @@
 from utils import BASE_DIR, WINDOW_TITLE, focus_nms, log, send_key
-from nms_bot import PLANET_LOAD_SECONDS, STATE_FILE
+from nms_bot import PLANET_LOAD_SECONDS, STATE_FILE, set_runtime_game_state
 import obsws_python as obs
 import subprocess
 import pyautogui
@@ -272,6 +272,12 @@ def main():
     args = parse_args()
     control_mode = args.mode
 
+    if control_mode == "dev":
+        set_runtime_game_state(planet_loading=True, startup_ready=False)
+        log("Starting dev server...")
+        proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
+        log(f"Dev server started (PID {proc.pid})")
+
     if control_mode == "twitch":
         log("Starting OBS before NMS so Game Capture hook attaches cleanly...")
         # set_nms_audio_device()
@@ -304,9 +310,7 @@ def main():
         log(f"Twitch bot started (PID {proc.pid})")
     else:
         log("Dev mode — skipping OBS and Twitch bot.")
-        log("Starting dev server...")
-        proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
-        log(f"Dev server started (PID {proc.pid})")
+        set_runtime_game_state(planet_loading=False, startup_ready=True)
 
     log("Startup sequence complete.")
 

@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command
+from nms_bot import COMMANDS, NMSState, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_status_text
 from datetime import datetime, timedelta
@@ -102,6 +102,10 @@ class Config:
     FORCED_QUEUE_COMMANDS = {
         "teleport",
         "next_planet",
+        "coords",
+    }
+
+    LOCKOUT_COMMANDS = {
         "coords",
     }
 
@@ -235,6 +239,7 @@ class NMSBot(commands.Bot):
         self._cmd_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
         self._active_command_tasks: set[asyncio.Task] = set()
+        self._lockout_command: Optional[str] = None
 
         self._tokens = None
         self._access_token = "dev"
@@ -335,6 +340,20 @@ class NMSBot(commands.Bot):
             return
 
         name, args = self._parse_command(content)
+
+        runtime_game = get_runtime_game_state()
+        if not runtime_game.get("startup_ready", False):
+            await self._say(ctx, "Game loading — please wait.")
+            return
+
+        if runtime_game.get("planet_loading", False):
+            await self._say(ctx, "Planet loading — please wait.")
+            return
+
+        if self._lockout_command:
+            await self._say(ctx, f"!{self._lockout_command} is running — please wait.")
+            return
+
         if name in {"yes", "no", "help", "status"} or name in COMMANDS:
             record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
 
@@ -379,12 +398,19 @@ class NMSBot(commands.Bot):
             log(f"Command worker: no func found for !{name}")
             return
 
+        lockout = name in Config.LOCKOUT_COMMANDS
+        if lockout:
+            self._lockout_command = name
+
         try:
             log(f"Command worker: executing !{name} {args}")
             await asyncio.to_thread(func.func, args)
             log(f"Command worker: !{name} complete.")
         except Exception as e:
             log(f"Command failed: !{name} {args} ({e})")
+        finally:
+            if lockout:
+                self._lockout_command = None
 
     async def _start_immediate_command(self, name: str, args: list[str]):
         task = asyncio.create_task(self._run_command(name, args))

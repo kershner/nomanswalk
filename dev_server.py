@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request, send_from_directory
 from nms_twitch_bot import Config, NMSBot
+from nms_bot import get_runtime_game_state
 import argparse
 import asyncio
 import os
@@ -38,11 +39,20 @@ class DevContext:
             _messages.append(text)
 
 
+async def _wait_for_startup():
+    while not get_runtime_game_state().get("startup_ready", False):
+        await asyncio.sleep(0.5)
+    await _bot._start_runtime(_ctx, run_startup=True)
+
+
 async def _init_bot():
     global _bot, _ctx
     _bot = NMSBot(dev_mode=True)
     _ctx = DevContext()
-    asyncio.create_task(_bot._start_runtime(_ctx, run_startup=ARGS.startup))
+    if ARGS.startup:
+        asyncio.create_task(_wait_for_startup())
+    else:
+        asyncio.create_task(_bot._start_runtime(_ctx, run_startup=False))
 
 
 def _run_loop():

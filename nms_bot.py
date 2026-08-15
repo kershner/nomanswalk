@@ -29,7 +29,7 @@ STUCK_SECONDS = 10       # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
-DAILY_STATS_FILE = os.path.join(BASE_DIR, "daily_stats.json")
+RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
 MAX_WALK_SAMPLE_DISTANCE = 500.0
 
 
@@ -77,12 +77,33 @@ def _new_daily_stats():
     }
 
 
-def _save_daily_stats():
+def _read_runtime_state():
     try:
-        with open(DAILY_STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(_daily_stats, f, indent=2)
+        with open(RUNTIME_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+            return state if isinstance(state, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_runtime_state(state):
+    try:
+        tmp = RUNTIME_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, RUNTIME_STATE_FILE)
     except Exception as e:
-        log(f"Daily stats save failed: {e}")
+        log(f"Runtime state save failed: {e}")
+
+
+def _update_runtime_section(section, value):
+    state = _read_runtime_state()
+    state[section] = value
+    _write_runtime_state(state)
+
+
+def _save_daily_stats():
+    _update_runtime_section("daily", _daily_stats)
 
 
 def _ensure_daily_stats():
@@ -97,13 +118,9 @@ def _ensure_daily_stats():
 
 def _load_daily_stats():
     global _daily_stats
-    try:
-        with open(DAILY_STATS_FILE, "r", encoding="utf-8") as f:
-            _daily_stats = json.load(f)
-    except Exception:
-        _daily_stats = _new_daily_stats()
+    daily = _read_runtime_state().get("daily")
+    _daily_stats = daily if isinstance(daily, dict) else _new_daily_stats()
     _ensure_daily_stats()
-
 
 def _planet_key(data):
     ua = data.get("universe_address") or {}
@@ -182,23 +199,34 @@ def get_daily_stats():
 
 _load_daily_stats()
 
-# Planet-load lockout — set during teleport to pause stuck-checking and
-# block new commands in the Twitch bot.
-_planet_loading = False
-_planet_loading_lock = threading.Lock()
+# Shared runtime game state — visible to launcher, dev server, and bot.
+_runtime_state_lock = threading.Lock()
+
+
+def set_runtime_game_state(**values):
+    with _runtime_state_lock:
+        state = _read_runtime_state()
+        game = state.get("game")
+        if not isinstance(game, dict):
+            game = {}
+        game.update(values)
+        state["game"] = game
+        _write_runtime_state(state)
+
+
+def get_runtime_game_state():
+    state = _read_runtime_state()
+    game = state.get("game")
+    return game if isinstance(game, dict) else {}
 
 
 def set_planet_loading(val: bool):
-    global _planet_loading
-    with _planet_loading_lock:
-        _planet_loading = bool(val)
+    set_runtime_game_state(planet_loading=bool(val))
     log(f"Planet loading: {val}")
 
 
 def is_planet_loading() -> bool:
-    with _planet_loading_lock:
-        return _planet_loading
-
+    return bool(get_runtime_game_state().get("planet_loading", False))
 
 def _is_in_cave() -> bool:
     data = NMSState.get_data()
