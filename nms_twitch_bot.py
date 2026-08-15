@@ -70,7 +70,7 @@ class Config:
         "stop": "All movement stopped.",
         "s": "All movement stopped.",
         "cruise": "Cruise toggled.",
-        "engage": "Cruise toggled.",
+        "engage": "Boost toggled.",
         "boost": "Boost toggled.",
         "camera": "Camera toggled.",
         "coords": "Showing planet coordinates for 10 seconds.",
