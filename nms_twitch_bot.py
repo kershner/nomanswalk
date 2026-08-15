@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, activate_quickslot, cancel_movement, get_active_quickslot, get_canonical_command_name, is_quickslot_cooldown, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, cancel_movement, get_canonical_command_name, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_info_text, get_location_text
 from datetime import datetime, timedelta
@@ -371,14 +371,6 @@ class NMSBot(commands.Bot):
             return
 
         canonical_name = get_canonical_command_name(name)
-        active_quickslot = get_active_quickslot()
-        if active_quickslot and canonical_name not in MOVEMENT_COMMANDS | {"left_click", "right_click", "stop"}:
-            await self._say(ctx, f"Finish or cancel !{active_quickslot} first.")
-            return
-
-        if is_quickslot_cooldown() and canonical_name in {"camera", "coords", "ship", "anomaly", "pet", "dance"}:
-            await self._say(ctx, "Quick menu closing — please wait.")
-            return
 
         if name in {"yes", "no", "help", "more", "info", "location", "loc"} or name in COMMANDS:
             record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
@@ -486,9 +478,6 @@ class NMSBot(commands.Bot):
 
     async def _submit_command(self, name: str, args: list[str]):
         canonical_name = get_canonical_command_name(name)
-
-        if canonical_name in {"ship", "anomaly", "pet"}:
-            activate_quickslot(canonical_name)
 
         if canonical_name == "stop":
             cancel_movement()
