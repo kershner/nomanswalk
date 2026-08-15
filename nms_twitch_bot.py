@@ -332,6 +332,8 @@ class NMSBot(commands.Bot):
         log(f"Connected to Twitch as {self.nick}")
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
+            while not get_runtime_game_state().get("startup_ready", False):
+                await asyncio.sleep(0.5)
             await self._start_runtime(channel)
 
     async def process_chat_message(self, ctx, content: str, message=None):
@@ -342,13 +344,21 @@ class NMSBot(commands.Bot):
         name, args = self._parse_command(content)
 
         runtime_game = get_runtime_game_state()
-        if not runtime_game.get("startup_ready", False):
-            await self._say(ctx, "Game loading — please wait.")
-            return
+        teleport_vote_response = (
+            name in {"yes", "no"}
+            and args
+            and args[0].lower().lstrip("!") in {"teleport", "planet"}
+            and self._teleport_vote.active
+        )
 
-        if runtime_game.get("planet_loading", False):
-            await self._say(ctx, "Planet loading — please wait.")
-            return
+        if not teleport_vote_response:
+            if not runtime_game.get("startup_ready", False):
+                await self._say(ctx, "Game loading — please wait.")
+                return
+
+            if runtime_game.get("planet_loading", False):
+                await self._say(ctx, "Planet loading — please wait.")
+                return
 
         if self._lockout_command:
             await self._say(ctx, f"!{self._lockout_command} is running — please wait.")

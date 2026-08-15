@@ -272,11 +272,16 @@ def main():
     args = parse_args()
     control_mode = args.mode
 
+    set_runtime_game_state(planet_loading=True, startup_ready=False)
+
     if control_mode == "dev":
-        set_runtime_game_state(planet_loading=True, startup_ready=False)
         log("Starting dev server...")
         proc = subprocess.Popen(DEV_SERVER_CMD, cwd=BASE_DIR)
         log(f"Dev server started (PID {proc.pid})")
+    else:
+        log("Starting Twitch bot...")
+        proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
+        log(f"Twitch bot started (PID {proc.pid})")
 
     if control_mode == "twitch":
         log("Starting OBS before NMS so Game Capture hook attaches cleanly...")
@@ -304,14 +309,10 @@ def main():
     log("Toggling music with the 'm' key...")
     send_key("m", 0.1)
 
-    if control_mode == "twitch":
-        log("Starting Twitch bot...")
-        proc = subprocess.Popen(TWITCH_BOT_CMD, cwd=BASE_DIR)
-        log(f"Twitch bot started (PID {proc.pid})")
-    else:
+    if control_mode == "dev":
         log("Dev mode — skipping OBS and Twitch bot.")
-        set_runtime_game_state(planet_loading=False, startup_ready=True)
 
+    set_runtime_game_state(planet_loading=False, startup_ready=True)
     log("Startup sequence complete.")
 
 
