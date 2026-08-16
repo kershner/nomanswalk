@@ -694,6 +694,7 @@ def ship(args=None):
 
 
 def anomaly(args=None):
+    stop()
     send_key("3", 0.1)
 
 
