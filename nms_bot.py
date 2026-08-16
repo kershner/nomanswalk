@@ -716,6 +716,13 @@ def music(args=None):
     send_key("m", 0.1)
 
 
+def hud(args=None):
+    """Toggle the HUD. Handled by the hud_toggle mod."""
+    focus_nms()
+    time.sleep(0.2)
+    send_key("f5", 0.1)
+
+
 def day(args=None):
     """Set the in-game time to day. Handled by the time_of_day mod."""
     send_key("f6", 0.1)
@@ -849,6 +856,7 @@ COMMANDS: dict[str, Command] = {
     "dance": Command(dance, "Make the Walker dance."),
     "inventory": Command(inventory, "Open the inventory."),
     "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
+    "hud": Command(hud, "Toggle the HUD.", hidden=True),
     "day": Command(day, "Force the current planet to daytime."),
     "night": Command(night, "Force the current planet to nighttime."),
     "resume_time": Command(resume_time, "Return to the planet's normal day/night cycle."),

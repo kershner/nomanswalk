@@ -56,6 +56,7 @@ class Config:
 
     ADMIN_ONLY_COMMANDS = {
         "next_planet",
+        "hud",
     }
 
     VOTABLE_COMMANDS = {
