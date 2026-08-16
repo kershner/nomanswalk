@@ -114,10 +114,22 @@ def get_info_text(countdown: str = "") -> str:
     try:
         state, stats = _get_status_state()
         planet = state.get("planet", {})
-        env = state.get("environment") or {}
-        in_space = state.get("state", "UNKNOWN") != "ON_FOOT" and env.get("inside_atmosphere") is False
+        location = state.get("state")
 
-        activity = "In space" if in_space else f"Walking across {planet.get('name', 'unknown')} ({planet.get('biome', 'unknown')})"
+        if location in ("NEXUS", "ANOMALY"):
+            activity = "Aboard the Space Anomaly"
+        elif location == "FREIGHTER":
+            activity = "Aboard the Walker's ship"
+        elif location == "SPACE_STATION":
+            activity = "At a space station"
+        elif location == "IN_COCKPIT":
+            activity = "In space"
+        else:
+            name = planet.get("name")
+            biome = planet.get("biome")
+            activity = f"Walking across {name}" if name else "Walking across a planet"
+            if biome:
+                activity += f" ({biome})"
         parts = [activity]
         if countdown:
             parts.append(f"Next planet vote in {countdown}")
@@ -136,19 +148,34 @@ def get_info_text(countdown: str = "") -> str:
 def get_location_text() -> str:
     try:
         state, _ = _get_status_state()
+        location = state.get("state")
         planet = state.get("planet", {})
-        env = state.get("environment") or {}
-        if state.get("state", "UNKNOWN") != "ON_FOOT" and env.get("inside_atmosphere") is False:
-            return f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')} • In space"
+        solar_system = state.get("solar_system", {})
+
+        if location in ("NEXUS", "ANOMALY"):
+            return "Aboard the Space Anomaly"
+        if location == "FREIGHTER":
+            return "Aboard the Walker's ship"
+        if location == "SPACE_STATION":
+            name = solar_system.get("space_station_name")
+            return f"At a space station ({name})" if name else "At a space station"
+        if location == "IN_COCKPIT":
+            name = solar_system.get("name")
+            return f"In space ({name} system)" if name else "In space"
 
         mods = state.get("mods", {})
+        name = planet.get("name")
+        biome = planet.get("biome")
         weather = planet.get("weather_type", "")
         flora = planet.get("life", "")
         fauna = planet.get("creature_life", "")
+        activity = f"Walking across {name}" if name else "Walking across a planet"
+        if biome:
+            activity += f" ({biome})"
         return " • ".join(filter(None, [
-            f"Planet: {planet.get('name', 'unknown')} ({planet.get('biome', 'unknown')})",
-            f"Galaxy: {state.get('universe_address', {}).get('galaxy_name', 'unknown')}",
-            f"Size: {planet.get('planet_size', 'unknown')}",
+            activity,
+            f"Galaxy: {state.get('universe_address', {}).get('galaxy_name')}" if state.get("universe_address", {}).get("galaxy_name") else "",
+            f"Size: {planet.get('planet_size')}" if planet.get("planet_size") else "",
             "Ringed" if planet.get("has_rings") else "",
             f"Weather: {weather}" if weather else "",
             f"Flora: {flora}" if flora else "",

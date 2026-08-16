@@ -44,6 +44,29 @@ _slog = _make_logger("StateDetector", "nms_state_logger.log")
 
 DEFAULT_POLL_INTERVAL = 5.0
 
+
+NON_PLANET_LOCATIONS = {
+    EnvironmentLocation.Enum.SpaceStation,
+    EnvironmentLocation.Enum.Freighter,
+    EnvironmentLocation.Enum.FreighterInternals,
+    EnvironmentLocation.Enum.AbandonedFreighter,
+    EnvironmentLocation.Enum.InFleet,
+    EnvironmentLocation.Enum.InSpaceObject,
+    EnvironmentLocation.Enum.Nexus,
+    EnvironmentLocation.Enum.Anomaly,
+}
+
+LOCATION_STATES = {
+    EnvironmentLocation.Enum.SpaceStation: "SPACE_STATION",
+    EnvironmentLocation.Enum.Freighter: "FREIGHTER",
+    EnvironmentLocation.Enum.FreighterInternals: "FREIGHTER",
+    EnvironmentLocation.Enum.AbandonedFreighter: "ABANDONED_FREIGHTER",
+    EnvironmentLocation.Enum.InFleet: "FLEET",
+    EnvironmentLocation.Enum.InSpaceObject: "SPACE_OBJECT",
+    EnvironmentLocation.Enum.Nexus: "NEXUS",
+    EnvironmentLocation.Enum.Anomaly: "ANOMALY",
+}
+
 _live_player_ptr = None
 _live_player_addr = 0
 _live_player_update_count = 0
@@ -455,6 +478,22 @@ def _read_player_position_from_sim():
         return pos
 
     return _read_player_position_from_live_player()
+
+
+def _state_from_location(loc):
+    if loc in (EnvironmentLocation.Enum.PlanetInShip, EnvironmentLocation.Enum.Default):
+        return "IN_COCKPIT"
+
+    return LOCATION_STATES.get(loc, "ON_FOOT")
+
+
+def _is_non_planet_location(env_data):
+    loc = env_data.get("location_stable_raw", env_data.get("location_raw", -1))
+
+    try:
+        return EnvironmentLocation.Enum(loc) in NON_PLANET_LOCATIONS
+    except Exception:
+        return False
 
 
 def _normalize_planet_index(raw_idx):
@@ -877,9 +916,20 @@ def _choose_planet_index(env_data, standing_idx=-1):
 def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
     idx, ua = _choose_planet_index(env_data, standing_idx)
     env_copy = dict(env_data)
-    env_copy["nearest_planet_index"] = idx
+    non_planet = _is_non_planet_location(env_copy)
 
-    planet_ptr = planet_ptrs.get(idx)
+    if non_planet:
+        env_copy.pop("nearest_planet_index", None)
+        env_copy.pop("nearest_planet_index_raw", None)
+        env_copy.pop("nearest_planet_index_source", None)
+        env_copy.pop("distance_from_planet", None)
+        env_copy.pop("nearest_planet_sealevel", None)
+        ua.pop("planet_index", None)
+        ua.pop("planet_index_raw", None)
+        planet_ptr = None
+    else:
+        env_copy["nearest_planet_index"] = idx
+        planet_ptr = planet_ptrs.get(idx)
 
     return {
         "state": current_state,
@@ -896,7 +946,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.3-authoritative-location"
+    __version__ = "1.4-location-context"
 
     state = NMSModState()
 
@@ -969,12 +1019,7 @@ class StateLogger(Mod):
         self._last_write_time = time.time()
 
     def _restore_from_location(self):
-        loc = self.state.last_location_stable
-
-        if loc in (EnvironmentLocation.Enum.PlanetInShip, EnvironmentLocation.Enum.Default):
-            self.current_state = "IN_COCKPIT"
-        else:
-            self.current_state = "ON_FOOT"
+        self.current_state = _state_from_location(self.state.last_location_stable)
 
     def _cache_planet(self, this, source: str):
         try:
@@ -1151,13 +1196,7 @@ class StateLogger(Mod):
                         self.state.last_location_stable = loc_stable
                         self.state.in_galaxy_map = False
 
-                        if loc_stable in (
-                            EnvironmentLocation.Enum.PlanetInShip,
-                            EnvironmentLocation.Enum.Default,
-                        ):
-                            self.current_state = "IN_COCKPIT"
-                        else:
-                            self.current_state = "ON_FOOT"
+                        self.current_state = _state_from_location(loc_stable)
 
                 except Exception:
                     pass
