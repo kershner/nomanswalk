@@ -433,6 +433,11 @@ class NMSBot(commands.Bot):
             else:
                 await asyncio.to_thread(func.func, args)
             log(f"Command worker: !{name} complete.")
+            if name == "teleport":
+                channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
+                if channel:
+                    await self._do_info(channel, announce=False)
+                    await self._do_location(channel)
         except Exception as e:
             log(f"Command failed: !{name} {args} ({e})")
         finally:
@@ -719,6 +724,8 @@ class NMSBot(commands.Bot):
                 if passed:
                     passed_text = f"Destination: {teleport_text}" if is_teleport else help_text
                     await self._say(ctx, f"Vote passed! ({yes}-{no}) • {passed_text}")
+                    if is_teleport:
+                        await self._say(ctx, "Teleporting to new planet...")
                     await self._submit_command(name, args)
                     feedback = Config.COMMAND_FEEDBACK.get(name)
                     if feedback:
@@ -794,10 +801,11 @@ class NMSBot(commands.Bot):
     async def cmd_info(self, ctx: commands.Context):
         await self._do_info(ctx)
 
-    async def _do_info(self, ctx):
+    async def _do_info(self, ctx, announce=True):
         info = get_info_text(countdown=self._format_countdown())
         title = info.split(" • Today:", 1)[0]
-        await self._say(ctx, f"🪐{info}")
+        if announce:
+            await self._say(ctx, f"🪐{info}")
         await self._update_stream_info(title=title)
         if self._bsky:
             nms_bluesky.ensure_live(self._bsky, title)
