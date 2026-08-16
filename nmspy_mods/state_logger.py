@@ -185,8 +185,6 @@ GALAXY_NAMES: dict[int, str] = {
     97: "Apmaneessu",
     98: "Hicanpaav",
     99: "Akvasanta",
-    100: "AD",
-    101: "Advertisement",
     102: "Tuychelisaor",
     103: "Rivskimbe",
     104: "Daksanquix",
