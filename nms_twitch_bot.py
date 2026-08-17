@@ -262,6 +262,7 @@ class NMSBot(commands.Bot):
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
         self._shutdown_loop_task: Optional[asyncio.Task] = None
+        self._stream_info_state_task: Optional[asyncio.Task] = None
 
         super().__init__(
             token=self._access_token,
@@ -304,6 +305,9 @@ class NMSBot(commands.Bot):
         if not self._dev_mode:
             asyncio.create_task(self._refresh_loop())
             asyncio.create_task(self._start_schedulers())
+
+            if self._stream_info_state_task is None:
+                self._stream_info_state_task = asyncio.create_task(self._stream_info_state_loop())
 
             if self._teleport_loop_task is None:
                 self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
@@ -831,6 +835,24 @@ class NMSBot(commands.Bot):
         h = int(remaining // 3600)
         m = int((remaining % 3600) // 60)
         return f"{h}h{m:02d}m"
+
+    async def _stream_info_state_loop(self):
+        last_state = None
+        while True:
+            await asyncio.sleep(1)
+            state = NMSState.get_data().get("state")
+            if not state:
+                continue
+            if last_state is None:
+                last_state = state
+                continue
+            if state != last_state:
+                last_state = state
+                info = get_info_text(countdown=self._format_countdown())
+                title = info.split(" • Today:", 1)[0]
+                await self._update_stream_info(title=title)
+                if self._bsky:
+                    nms_bluesky.ensure_live(self._bsky, title)
 
     async def _update_stream_info(self, title: str = ""):
         """Update the Twitch stream title and tags via the Helix API."""
