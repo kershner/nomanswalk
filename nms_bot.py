@@ -759,12 +759,14 @@ def _do_teleport(key, label):
         log(f"{label}: waiting {PLANET_LOAD_SECONDS}s for planet to load...")
         time.sleep(PLANET_LOAD_SECONDS)
         stop()
+        time.sleep(0.1)
+        walk()
     finally:
         set_planet_loading(False)
+        
 
     log(f"{label}: planet load wait complete.")
-    walk()
-
+    
 
 def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
     if not args:

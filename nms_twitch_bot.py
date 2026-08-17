@@ -322,15 +322,12 @@ class NMSBot(commands.Bot):
             await self._say(channel, "No Man's Walk is online!")
             await self._do_info(channel)
 
-            await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
-            vote_task = self._teleport_vote.task
-            if vote_task:
-                await vote_task
-            await self._cmd_queue.join()
-
             await asyncio.to_thread(left_click)
             await asyncio.sleep(0.3)
             await self._do_walk(channel, announce=False)
+
+            await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
+            await self._cmd_queue.join()
             log("Startup sequence: complete.")
 
     async def event_ready(self):
