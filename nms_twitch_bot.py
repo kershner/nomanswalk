@@ -1,4 +1,5 @@
-from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, cancel_movement, get_canonical_command_name, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, _normalize_teleport_destination, cancel_movement, get_canonical_command_name, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from galaxy_names import get_galaxy_name
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_info_text, get_location_text
 from datetime import datetime, timedelta
@@ -262,7 +263,6 @@ class NMSBot(commands.Bot):
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
         self._shutdown_loop_task: Optional[asyncio.Task] = None
-        self._stream_info_state_task: Optional[asyncio.Task] = None
 
         super().__init__(
             token=self._access_token,
@@ -305,9 +305,6 @@ class NMSBot(commands.Bot):
         if not self._dev_mode:
             asyncio.create_task(self._refresh_loop())
             asyncio.create_task(self._start_schedulers())
-
-            if self._stream_info_state_task is None:
-                self._stream_info_state_task = asyncio.create_task(self._stream_info_state_loop())
 
             if self._teleport_loop_task is None:
                 self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
@@ -692,11 +689,12 @@ class NMSBot(commands.Bot):
         help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
         if is_teleport:
-            if args:
-                galaxy = args[1] if len(args) > 1 else "current"
-                teleport_text = f"address {args[0]} • Galaxy: {galaxy}"
+            address, galaxy = _normalize_teleport_destination(args)
+            if galaxy is not None:
+                galaxy_text = f"{get_galaxy_name(galaxy)} (Galaxy {galaxy})"
             else:
-                teleport_text = "random planet"
+                galaxy_text = "the current galaxy" if address else "a random galaxy"
+            teleport_text = f"{address} in {galaxy_text}" if address else f"Random planet in {galaxy_text}"
 
             await self._say(
                 ctx,
@@ -836,24 +834,6 @@ class NMSBot(commands.Bot):
         m = int((remaining % 3600) // 60)
         return f"{h}h{m:02d}m"
 
-    async def _stream_info_state_loop(self):
-        last_state = None
-        while True:
-            await asyncio.sleep(1)
-            state = NMSState.get_data().get("state")
-            if not state:
-                continue
-            if last_state is None:
-                last_state = state
-                continue
-            if state != last_state:
-                last_state = state
-                info = get_info_text(countdown=self._format_countdown())
-                title = info.split(" • Today:", 1)[0]
-                await self._update_stream_info(title=title)
-                if self._bsky:
-                    nms_bluesky.ensure_live(self._bsky, title)
-
     async def _update_stream_info(self, title: str = ""):
         """Update the Twitch stream title and tags via the Helix API."""
         if self._dev_mode:
@@ -962,30 +942,17 @@ class NMSBot(commands.Bot):
             return
 
         if name == "teleport" and args:
-            if len(args) not in (1, 2):
-                await self._say(ctx, "Usage: !teleport <12-character planet address> [galaxy 1-255]")
+            try:
+                address, galaxy = _normalize_teleport_destination(args)
+            except ValueError as e:
+                await self._say(ctx, str(e))
                 return
 
-            address = args[0].strip().upper()
-            if (
-                len(address) != 12
-                or address[0] not in "123456"
-                or any(c not in "0123456789ABCDEF" for c in address)
-            ):
-                await self._say(ctx, "Invalid planet address. It must be 12 hexadecimal characters and start with 1-6.")
-                return
-
-            if len(args) == 2:
-                try:
-                    galaxy = int(args[1])
-                except ValueError:
-                    galaxy = 0
-                if not 1 <= galaxy <= 255:
-                    await self._say(ctx, "Invalid galaxy. It must be a number from 1 to 255.")
-                    return
-                args = [address, str(galaxy)]
-            else:
-                args = [address]
+            args = []
+            if address:
+                args.append(f"address={address}")
+            if galaxy is not None:
+                args.append(f"galaxy={galaxy}")
 
         if is_planet_loading():
             await self._say(ctx, "Planet loading — please wait before sending commands.")

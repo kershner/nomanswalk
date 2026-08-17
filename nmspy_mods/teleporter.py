@@ -169,15 +169,15 @@ def _read_teleport_request():
     try:
         with open(TELEPORT_REQUEST_FILE, "r", encoding="utf-8") as f:
             payload = json.load(f)
-        address = payload.get("address", "")
-        destination = _decode_portal_address(address)
+        address = payload.get("address")
+        destination = _decode_portal_address(address) if address else None
         reality_idx = payload.get("reality")
         if reality_idx is not None:
             reality_idx = int(reality_idx)
             if not GALAXY_MIN <= reality_idx <= GALAXY_MAX:
                 raise ValueError("galaxy reality index must be from 0 to 254")
         os.remove(TELEPORT_REQUEST_FILE)
-        return address.upper(), destination, reality_idx
+        return address.upper() if address else None, destination, reality_idx
     except Exception:
         _tlog.error("[ADDRESS] Could not read teleport request:\n%s", traceback.format_exc())
         return None, None, None
@@ -343,24 +343,19 @@ class Teleporter(Mod):
         return None
 
     @on_key_pressed("o")
-    def key_random_local(self):
-        reality_idx = None
+    def key_teleport(self):
+        if not os.path.exists(TELEPORT_REQUEST_FILE):
+            _prepare_teleport(
+                self.state,
+                random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                random.randint(0, VOXEL_Y_MAX),
+                random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                random.randint(0, SYSTEM_MAX),
+            )
+            return
 
-        _prepare_teleport(
-            self.state,
-            random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-            random.randint(0, VOXEL_Y_MAX),
-            random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-            random.randint(0, SYSTEM_MAX),
-            reality_idx=reality_idx,
-        )
-
-
-    @on_key_pressed("i")
-    def key_address(self):
         address, destination, requested_reality = _read_teleport_request()
-
-        if destination is None:
+        if destination is None and requested_reality is None:
             return
 
         cur = _read_location_dict()
@@ -369,6 +364,14 @@ class Teleporter(Mod):
             return
 
         reality_idx = cur["reality"] if requested_reality is None else requested_reality
+        if destination is None:
+            destination = {
+                "voxel_x": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                "voxel_y": random.randint(0, VOXEL_Y_MAX),
+                "voxel_z": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+                "system": random.randint(0, SYSTEM_MAX),
+                "planet": SAFE_PLANET_INDEX,
+            }
         _tlog.info("[ADDRESS] %s -> reality=%d destination=%s", address, reality_idx, destination)
         _prepare_teleport(
             self.state,
@@ -378,7 +381,7 @@ class Teleporter(Mod):
             destination["system"],
             planet_idx=destination["planet"],
             reality_idx=reality_idx,
-            system_max=PORTAL_SYSTEM_MAX,
+            system_max=PORTAL_SYSTEM_MAX if address else SYSTEM_MAX,
         )
 
     @on_key_pressed("p")

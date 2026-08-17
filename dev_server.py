@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request, send_from_directory
 from nms_twitch_bot import Config, NMSBot
-from nms_bot import get_runtime_game_state
+from nms_bot import get_runtime_game_state, set_runtime_game_state
 import argparse
 import asyncio
 import os
@@ -14,6 +14,9 @@ def parse_args():
 
 
 ARGS = parse_args()
+
+if not ARGS.startup:
+    set_runtime_game_state(planet_loading=False, startup_ready=True)
 
 app = Flask(__name__)
 

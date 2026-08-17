@@ -769,30 +769,38 @@ def _do_teleport(key, label):
     
 
 def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
-    if not args:
-        return None, None
-
-    if len(args) not in (1, 2):
-        raise ValueError("Use !teleport <address> [galaxy 1-255].")
-
-    address = str(args[0]).strip().upper()
-    if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
-        raise ValueError("Planet address must be 12 hexadecimal characters and start with 1-6.")
-
+    address = None
     galaxy = None
-    if len(args) == 2:
-        try:
-            galaxy = int(args[1])
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Galaxy must be a number from 1 to 255.") from exc
-        if not 1 <= galaxy <= 255:
-            raise ValueError("Galaxy must be a number from 1 to 255.")
+
+    for arg in args or []:
+        key, sep, value = str(arg).partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if not sep or key not in {"address", "galaxy"} or not value:
+            raise ValueError("Use !teleport [address=HEX] [galaxy=NUMBER].")
+
+        if key == "address":
+            if address is not None:
+                raise ValueError("Address can only be supplied once.")
+            address = value.upper()
+            if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
+                raise ValueError("Planet address must be 12 hexadecimal characters and start with 1-6.")
+        else:
+            if galaxy is not None:
+                raise ValueError("Galaxy can only be supplied once.")
+            try:
+                galaxy = int(value)
+            except ValueError as exc:
+                raise ValueError("Galaxy must be a number from 1 to 255.") from exc
+            if not 1 <= galaxy <= 255:
+                raise ValueError("Galaxy must be a number from 1 to 255.")
 
     return address, galaxy
 
-
-def _write_teleport_request(address: str, galaxy: int | None = None) -> None:
-    payload = {"address": address}
+def _write_teleport_request(address: str | None, galaxy: int | None = None) -> None:
+    payload = {}
+    if address is not None:
+        payload["address"] = address
     if galaxy is not None:
         payload["reality"] = galaxy - 1
 
@@ -806,12 +814,9 @@ def teleport(args=None):
     """Teleport to a portal address in an optional galaxy, or randomly when omitted."""
     address, galaxy = _normalize_teleport_destination(args)
 
-    if address:
+    if address or galaxy is not None:
         _write_teleport_request(address, galaxy)
-        galaxy_label = f" in galaxy {galaxy}" if galaxy is not None else ""
-        _do_teleport("i", f"Teleport {address}{galaxy_label}")
-    else:
-        _do_teleport("o", "Teleport")
+    _do_teleport("o", "Teleport")
 
 
 def next_planet(args=None):
@@ -853,7 +858,7 @@ COMMANDS: dict[str, Command] = {
     "left_click": Command(left_click_cmd, "Click the left mouse button once.", aliases=("lc",)),
     "right_click": Command(right_click_cmd, "Click the right mouse button once.", aliases=("rc",)),
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
-    "teleport": Command(teleport, "Teleport randomly or use !teleport <12-character planet address> [galaxy 1-255]."),
+    "teleport": Command(teleport, "!teleport [address=HEX] [galaxy=NUMBER] | No options selects a random planet in a random galaxy. galaxy=NUMBER selects a random planet in that galaxy. address=HEX selects that location in the current galaxy. Use both to select a specific location in a specific galaxy."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "ship": Command(ship, "Select the Walker's ship placement quickslot."),
     "anomaly": Command(anomaly, "Select the Space Anomaly placement quickslot."),
