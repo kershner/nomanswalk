@@ -320,9 +320,7 @@ class NMSBot(commands.Bot):
         if run_startup:
             log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
-            await self._do_help(channel)
             await self._do_info(channel)
-            await self._do_location(channel)
 
             await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
             vote_task = self._teleport_vote.task
@@ -530,25 +528,38 @@ class NMSBot(commands.Bot):
                 await asyncio.sleep(300)
 
     async def _start_schedulers(self):
-        """Spawn one independent loop per entry in Config.SCHEDULED_COMMANDS."""
+        """Run scheduled chat commands from one loop so messages never overlap."""
         channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
         if not channel:
             return
-        for interval_s, handler_name in Config.SCHEDULED_COMMANDS:
-            asyncio.create_task(self._scheduler_loop(channel, interval_s, handler_name))
 
-    async def _scheduler_loop(self, channel, interval_s: int, handler_name: str):
-        handler = getattr(self, handler_name, None)
-        if handler is None:
-            log(f"Scheduler: unknown handler '{handler_name}', skipping.")
-            return
-        log(f"Scheduler: '{handler_name}' will run every {interval_s}s.")
+        now = time.monotonic()
+        scheduled = [
+            {"interval": interval_s, "handler": handler_name, "next_run": now + interval_s}
+            for interval_s, handler_name in Config.SCHEDULED_COMMANDS
+        ]
+        log("Scheduler: cyclic chat scheduler started.")
+
         while True:
-            await asyncio.sleep(interval_s)
-            try:
-                await handler(channel)
-            except Exception as e:
-                log(f"Scheduler: '{handler_name}' failed: {e}")
+            next_run = min(item["next_run"] for item in scheduled)
+            await asyncio.sleep(max(0.0, next_run - time.monotonic()))
+            now = time.monotonic()
+
+            for item in scheduled:
+                if item["next_run"] > now:
+                    continue
+
+                handler = getattr(self, item["handler"], None)
+                if handler is None:
+                    log(f"Scheduler: unknown handler '{item['handler']}', skipping.")
+                else:
+                    try:
+                        await handler(channel)
+                    except Exception as e:
+                        log(f"Scheduler: '{item['handler']}' failed: {e}")
+
+                while item["next_run"] <= now:
+                    item["next_run"] += item["interval"]
 
     async def _teleport_loop(self):
         """Every _teleport_interval_s (from startup) start a vote to teleport to a new planet."""
