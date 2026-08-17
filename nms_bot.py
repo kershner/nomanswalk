@@ -783,8 +783,8 @@ def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
             if address is not None:
                 raise ValueError("Address can only be supplied once.")
             address = value.upper()
-            if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
-                raise ValueError("Planet address must be 12 hexadecimal characters and start with 1-6.")
+            if len(address) != 12 or any(c not in "0123456789ABCDEF" for c in address):
+                raise ValueError("Planet address must be exactly 12 hexadecimal characters.")
         else:
             if galaxy is not None:
                 raise ValueError("Galaxy can only be supplied once.")

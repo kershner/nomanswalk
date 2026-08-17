@@ -50,7 +50,8 @@ VOXEL_Y_MAX = 255
 SYSTEM_MAX = 599
 SAFE_PLANET_INDEX = 0
 LOAD_TIMEOUT_S = 25.0
-PORTAL_SYSTEM_MAX = 0x2FF
+PORTAL_SYSTEM_MAX = 0xFFE
+PORTAL_VOXEL_XZ_MAX = 0x7FF
 TELEPORT_REQUEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teleport_request.json")
 
 
@@ -153,15 +154,32 @@ def _signed_portal_coord(value, bits):
 def _decode_portal_address(address):
     address = str(address).strip().upper()
 
-    if len(address) != 12 or address[0] not in "123456" or any(c not in "0123456789ABCDEF" for c in address):
+    if len(address) != 12 or any(c not in "0123456789ABCDEF" for c in address):
         raise ValueError("invalid 12-character portal address")
 
+    planet = int(address[0], 16)
+    system = int(address[1:4], 16)
+    voxel_y = int(address[4:6], 16)
+    voxel_z = int(address[6:9], 16)
+    voxel_x = int(address[9:12], 16)
+
+    if planet == 0 or planet > 6:
+        planet = 1
+    if system in (0, 0xFFF):
+        system = 1
+    if voxel_y == 0x80:
+        voxel_y = 0x81
+    if voxel_z == 0x800:
+        voxel_z = 0x801
+    if voxel_x == 0x800:
+        voxel_x = 0x801
+
     return {
-        "planet": int(address[0], 16) - 1,
-        "system": int(address[1:4], 16),
-        "voxel_y": _signed_portal_coord(int(address[4:6], 16), 8),
-        "voxel_z": _signed_portal_coord(int(address[6:9], 16), 12),
-        "voxel_x": _signed_portal_coord(int(address[9:12], 16), 12),
+        "planet": planet - 1,
+        "system": system,
+        "voxel_y": _signed_portal_coord(voxel_y, 8),
+        "voxel_z": _signed_portal_coord(voxel_z, 12),
+        "voxel_x": _signed_portal_coord(voxel_x, 12),
     }
 
 
@@ -219,6 +237,7 @@ def _prepare_teleport(
     planet_idx=SAFE_PLANET_INDEX,
     reality_idx=None,
     system_max=SYSTEM_MAX,
+    voxel_xz_max=VOXEL_XZ_MAX,
 ):
     if state.loading:
         _tlog.warning(
@@ -238,9 +257,9 @@ def _prepare_teleport(
     if reality_idx is None:
         reality_idx = random.randint(GALAXY_MIN, GALAXY_MAX)
 
-    vx = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, int(vx)))
+    vx = max(-voxel_xz_max, min(voxel_xz_max, int(vx)))
     vy = max(-VOXEL_Y_MAX, min(VOXEL_Y_MAX, int(vy)))
-    vz = max(-VOXEL_XZ_MAX, min(VOXEL_XZ_MAX, int(vz)))
+    vz = max(-voxel_xz_max, min(voxel_xz_max, int(vz)))
     sys_idx = max(0, min(system_max, int(sys_idx)))
     planet_idx = max(0, int(planet_idx))
     reality_idx = max(GALAXY_MIN, min(GALAXY_MAX, int(reality_idx)))
@@ -382,6 +401,7 @@ class Teleporter(Mod):
             planet_idx=destination["planet"],
             reality_idx=reality_idx,
             system_max=PORTAL_SYSTEM_MAX if address else SYSTEM_MAX,
+            voxel_xz_max=PORTAL_VOXEL_XZ_MAX if address else VOXEL_XZ_MAX,
         )
 
     @on_key_pressed("p")
