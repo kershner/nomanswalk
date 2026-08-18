@@ -649,7 +649,6 @@ def _gather_universe_address():
             and abs(vz) < 5000
             and abs(vy) <= 5000
             and 0 <= si < 800
-            and 0 <= raw_pi <= 5
             and 0 <= ri <= 255
         ):
             _slog.warning(
@@ -664,18 +663,23 @@ def _gather_universe_address():
             )
             return {}
 
-        return {
+        result = {
             "voxel_x": vx,
             "voxel_y": vy,
             "voxel_z": vz,
             "solar_system_index": si,
-            "planet_index": pi,
-            "planet_index_raw": raw_pi,
             "reality_index": ri,
             "galaxy_number": ri + 1,
             "galaxy_name": galaxy_name(ri),
             "source": vals.get("source", "unknown"),
         }
+
+        if 0 <= pi <= 5:
+            result["planet_index"] = pi
+        if 0 <= raw_pi <= 5:
+            result["planet_index_raw"] = raw_pi
+
+        return result
 
     except Exception:
         _slog.warning("_gather_universe_address failed: %s", traceback.format_exc())

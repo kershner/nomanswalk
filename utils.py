@@ -10,6 +10,8 @@ import time
 import json
 import os
 
+from galaxy_names import get_galaxy_name
+
 
 log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "no_mans_walk.log")
 logging.basicConfig(
@@ -24,6 +26,7 @@ logging.basicConfig(
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_TITLE = "No Man's Sky"
+_last_galaxy_name = None
 
 
 def _set_dpi_aware():
@@ -110,6 +113,29 @@ def _get_status_state():
         return json.load(f), get_daily_stats()
 
 
+
+def _get_galaxy_name(state: dict) -> str | None:
+    global _last_galaxy_name
+
+    ua = state.get("universe_address") or {}
+    name = ua.get("galaxy_name")
+
+    if not name:
+        number = ua.get("galaxy_number")
+        if number is None:
+            reality_index = ua.get("reality_index")
+            if isinstance(reality_index, int):
+                number = reality_index + 1
+        if isinstance(number, int):
+            name = get_galaxy_name(number)
+
+    if name:
+        _last_galaxy_name = name
+        return name
+
+    return _last_galaxy_name
+
+
 def get_info_text(countdown: str = "") -> str:
     try:
         state, stats = _get_status_state()
@@ -119,7 +145,7 @@ def get_info_text(countdown: str = "") -> str:
         if location in ("NEXUS", "ANOMALY"):
             activity = "Aboard the Space Anomaly"
         elif location == "FREIGHTER":
-            activity = "Aboard the Walker's ship"
+            activity = "Aboard a ship"
         elif location == "SPACE_STATION":
             activity = "At a space station"
         elif location == "IN_COCKPIT":
@@ -130,7 +156,12 @@ def get_info_text(countdown: str = "") -> str:
             activity = f"Walking across {name}" if name else "Walking across a planet"
             if biome:
                 activity += f" ({biome})"
+        galaxy_name = _get_galaxy_name(state)
+        if galaxy_name and location not in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
+            activity += f" • Galaxy: {galaxy_name}"
         parts = [activity]
+        if galaxy_name and location in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
+            parts.append(f"Galaxy: {galaxy_name}")
         if countdown:
             parts.append(f"Next planet vote in {countdown}")
         parts.append(
@@ -151,17 +182,21 @@ def get_location_text() -> str:
         location = state.get("state")
         planet = state.get("planet", {})
         solar_system = state.get("solar_system", {})
+        galaxy_name = _get_galaxy_name(state)
+
+        def with_galaxy(text: str) -> str:
+            return f"{text} • Galaxy: {galaxy_name}" if galaxy_name else text
 
         if location in ("NEXUS", "ANOMALY"):
-            return "Aboard the Space Anomaly"
+            return with_galaxy("Aboard the Space Anomaly")
         if location == "FREIGHTER":
-            return "Aboard the Walker's ship"
+            return with_galaxy("Aboard a ship")
         if location == "SPACE_STATION":
             name = solar_system.get("space_station_name")
-            return f"At a space station ({name})" if name else "At a space station"
+            return with_galaxy(f"At a space station ({name})" if name else "At a space station")
         if location == "IN_COCKPIT":
             name = solar_system.get("name")
-            return f"In space ({name} system)" if name else "In space"
+            return with_galaxy(f"In space ({name} system)" if name else "In space")
 
         mods = state.get("mods", {})
         name = planet.get("name")
@@ -169,12 +204,11 @@ def get_location_text() -> str:
         weather = planet.get("weather_type", "")
         flora = planet.get("life", "")
         fauna = planet.get("creature_life", "")
-        activity = f"Walking across {name}" if name else "Walking across a planet"
+        activity = name or "A planet"
         if biome:
             activity += f" ({biome})"
-        return " • ".join(filter(None, [
-            activity,
-            f"Galaxy: {state.get('universe_address', {}).get('galaxy_name')}" if state.get("universe_address", {}).get("galaxy_name") else "",
+
+        details = " • ".join(filter(None, [
             f"Size: {planet.get('planet_size')}" if planet.get("planet_size") else "",
             "Ringed" if planet.get("has_rings") else "",
             f"Weather: {weather}" if weather else "",
@@ -184,6 +218,10 @@ def get_location_text() -> str:
             f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}",
             f"Time: {mods.get('time', 'normal').title()}",
         ]))
+
+        text = with_galaxy(activity)
+        return f"{text} • {details}" if details else text
     except Exception as e:
         log(f"get_location_text failed: {e}")
         return "Could not read location state."
+
