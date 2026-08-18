@@ -287,7 +287,7 @@ def poll_state():
 
             ts = float(data.get("timestamp", 0.0))
             raw_state = data.get("state", "UNKNOWN")
-            state = "ON_FOOT" if raw_state == "ON_FOOT" else "NOT_ON_FOOT"
+            state = "NOT_ON_FOOT" if raw_state in {"IN_COCKPIT", "GALAXY_MAP", "UNKNOWN"} else "ON_FOOT"
             NMSState.update(state, ts, data)
             update_daily_movement(state, data)
 
