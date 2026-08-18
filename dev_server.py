@@ -55,7 +55,7 @@ async def _init_bot():
     if ARGS.startup:
         asyncio.create_task(_wait_for_startup())
     else:
-        asyncio.create_task(_bot._start_runtime(_ctx, run_startup=False))
+        asyncio.create_task(_bot._start_runtime(_ctx, run_startup=False, run_automation=False))
 
 
 def _run_loop():

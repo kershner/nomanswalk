@@ -32,10 +32,11 @@ class Config:
 
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
+    SCHEDULED_COMMAND_INTERVAL = 20 * 60
     SCHEDULED_COMMANDS = [
-        (20 * 60, "_do_help"),    # !help every 20 minutes
-        (30 * 60, "_do_info"),    # !info every 30 minutes
-        (60 * 60, "_do_location"),  # !location every 60 minutes
+        "_do_help",
+        "_do_info",
+        "_do_location",
     ]
 
     SHUTDOWN_HOUR = 0             # 0 = midnight; change to e.g. 2 for 2 AM EST
@@ -263,6 +264,8 @@ class NMSBot(commands.Bot):
         self._teleport_loop_task: Optional[asyncio.Task] = None
 
         self._shutdown_loop_task: Optional[asyncio.Task] = None
+        self._scheduler_task: Optional[asyncio.Task] = None
+        self._refresh_loop_task: Optional[asyncio.Task] = None
 
         super().__init__(
             token=self._access_token,
@@ -294,27 +297,33 @@ class NMSBot(commands.Bot):
     def _should_queue_command(self, name: str) -> bool:
         return Config.USE_COMMAND_QUEUE or name in Config.FORCED_QUEUE_COMMANDS
 
-    async def _start_runtime(self, channel, run_startup=True):
+    async def _start_runtime(self, channel, run_startup=True, run_automation=True):
         self._chat_context = channel
         start_state_poller()
 
-        if self._worker_task is None:
+        if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._command_worker())
             log("Command worker started.")
 
-        if not self._dev_mode:
-            asyncio.create_task(self._refresh_loop())
-            asyncio.create_task(self._start_schedulers())
+        if run_automation:
+            if self._scheduler_task is None or self._scheduler_task.done():
+                self._scheduler_task = asyncio.create_task(self._start_schedulers())
+                log("Scheduler: cyclic chat scheduler task started.")
 
-            if self._teleport_loop_task is None:
+            if self._teleport_loop_task is None or self._teleport_loop_task.done():
                 self._teleport_loop_task = asyncio.create_task(self._teleport_loop())
                 log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
 
-            if self._shutdown_loop_task is None:
+        if not self._dev_mode:
+            if self._refresh_loop_task is None or self._refresh_loop_task.done():
+                self._refresh_loop_task = asyncio.create_task(self._refresh_loop())
+                log("Token refresh loop started.")
+
+            if self._shutdown_loop_task is None or self._shutdown_loop_task.done():
                 self._shutdown_loop_task = asyncio.create_task(self._nightly_shutdown_loop())
                 log("Nightly shutdown loop started.")
 
-            if self._bsky and self._bluesky_post_task is None:
+            if self._bsky and (self._bluesky_post_task is None or self._bluesky_post_task.done()):
                 self._bluesky_post_task = asyncio.create_task(self._fixed_bluesky_post_loop())
                 log("Bluesky scheduler: fixed-time post loop started.")
 
@@ -526,38 +535,32 @@ class NMSBot(commands.Bot):
                 await asyncio.sleep(300)
 
     async def _start_schedulers(self):
-        """Run scheduled chat commands from one loop so messages never overlap."""
-        channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
-        if not channel:
-            return
-
-        now = time.monotonic()
-        scheduled = [
-            {"interval": interval_s, "handler": handler_name, "next_run": now + interval_s}
-            for interval_s, handler_name in Config.SCHEDULED_COMMANDS
-        ]
-        log("Scheduler: cyclic chat scheduler started.")
+        """Run exactly one scheduled chat command every 20 minutes, in rotation."""
+        interval = Config.SCHEDULED_COMMAND_INTERVAL
+        index = 0
+        next_run = time.monotonic() + interval
 
         while True:
-            next_run = min(item["next_run"] for item in scheduled)
             await asyncio.sleep(max(0.0, next_run - time.monotonic()))
+
+            channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
+            handler_name = Config.SCHEDULED_COMMANDS[index]
+            handler = getattr(self, handler_name, None)
+
+            if channel and handler is not None:
+                try:
+                    await handler(channel)
+                except Exception as e:
+                    log(f"Scheduler: '{handler_name}' failed: {e}")
+            elif handler is None:
+                log(f"Scheduler: unknown handler '{handler_name}', skipping.")
+
+            index = (index + 1) % len(Config.SCHEDULED_COMMANDS)
+            next_run += interval
+
             now = time.monotonic()
-
-            for item in scheduled:
-                if item["next_run"] > now:
-                    continue
-
-                handler = getattr(self, item["handler"], None)
-                if handler is None:
-                    log(f"Scheduler: unknown handler '{item['handler']}', skipping.")
-                else:
-                    try:
-                        await handler(channel)
-                    except Exception as e:
-                        log(f"Scheduler: '{item['handler']}' failed: {e}")
-
-                while item["next_run"] <= now:
-                    item["next_run"] += item["interval"]
+            while next_run <= now:
+                next_run += interval
 
     async def _teleport_loop(self):
         """Every _teleport_interval_s (from startup) start a vote to teleport to a new planet."""
