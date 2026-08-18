@@ -670,7 +670,9 @@ class NMSBot(commands.Bot):
                 continue
 
             try:
-                await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, countdown=self._format_countdown())
+                post_index = Config.BLUESKY_POST_TIMES.index(next_post.strftime("%H:%M"))
+                status_text = get_location_text() if post_index == 0 else get_info_text(countdown=self._format_countdown())
+                await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, status_text=status_text)
                 log("Bluesky scheduler: post_clip() complete.")
             except Exception as e:
                 log(f"Bluesky scheduler failed: {e}")

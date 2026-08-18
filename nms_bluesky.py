@@ -218,9 +218,9 @@ def _fit_post_text(status_text: str, tag_line: str) -> str:
     return f"{status_text}{suffix}"
 
 
-def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = ""):
+def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = "", status_text: str = ""):
     params = _load_params(params_file)
-    status_text = get_info_text(countdown=countdown)
+    status_text = status_text or get_info_text(countdown=countdown)
 
     broadcaster_id = params["NMS_TWITCH_BROADCASTER_ID"]
     token = _get_twitch_token(params)
