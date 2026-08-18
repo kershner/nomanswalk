@@ -35,8 +35,8 @@ class Config:
     SCHEDULED_COMMAND_INTERVAL = 20 * 60
     SCHEDULED_COMMANDS = [
         "_do_help",
-        "_do_info",
         "_do_location",
+        "_do_info",
     ]
 
     SHUTDOWN_HOUR = 0             # 0 = midnight; change to e.g. 2 for 2 AM EST
@@ -335,7 +335,6 @@ class NMSBot(commands.Bot):
         if run_startup:
             log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
-            await self._do_info(channel)
 
             await asyncio.to_thread(left_click)
             await asyncio.sleep(0.3)
@@ -543,7 +542,7 @@ class NMSBot(commands.Bot):
         """Run exactly one scheduled chat command every 20 minutes, in rotation."""
         interval = Config.SCHEDULED_COMMAND_INTERVAL
         index = 0
-        next_run = time.monotonic() + interval
+        next_run = time.monotonic()
 
         while True:
             await asyncio.sleep(max(0.0, next_run - time.monotonic()))
