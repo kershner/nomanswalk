@@ -37,6 +37,7 @@ class Config:
     SCHEDULED_COMMAND_INTERVAL = 20 * 60
     RECENT_LOCATION_SKIP_WINDOW = 20 * 60
     STREAM_INFO_UPDATE_INTERVAL = 5 * 60
+    STREAM_INFO_STATE_POLL_INTERVAL = 1
     NMS_CRASH_POLL_INTERVAL = 5
     NMS_CRASH_MISSES = 3
     SCHEDULED_COMMANDS = [
@@ -917,13 +918,23 @@ class NMSBot(commands.Bot):
             await asyncio.to_thread(nms_bluesky.ensure_live, self._bsky, title)
 
     async def _stream_info_update_loop(self):
-        """Refresh stream metadata every five minutes without writing to chat."""
+        """Refresh on state changes and every five minutes without writing to chat."""
+        last_state_title = None
+        next_periodic_update = 0.0
+
         while True:
-            try:
-                await self._refresh_stream_presence()
-            except Exception as e:
-                log(f"Stream info background update failed: {e}")
-            await asyncio.sleep(Config.STREAM_INFO_UPDATE_INTERVAL)
+            state_title = get_info_text().split(" • Today:", 1)[0]
+            now = time.monotonic()
+
+            if state_title != last_state_title or now >= next_periodic_update:
+                try:
+                    await self._refresh_stream_presence()
+                    last_state_title = state_title
+                    next_periodic_update = now + Config.STREAM_INFO_UPDATE_INTERVAL
+                except Exception as e:
+                    log(f"Stream info background update failed: {e}")
+
+            await asyncio.sleep(Config.STREAM_INFO_STATE_POLL_INTERVAL)
 
     @commands.command(name="location", aliases=("loc",))
     async def cmd_location(self, ctx: commands.Context):
