@@ -421,6 +421,18 @@ def left_click(hold_seconds: float = 0.0):
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
+def _click_hold_seconds(args) -> float:
+    if not args:
+        return 0.0
+    try:
+        seconds = float(args[0])
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(seconds):
+        return 0.0
+    return max(0.0, min(10.0, seconds))
+
+
 def _clamp(val, lo=1, hi=100) -> int:
     try:
         return max(lo, min(hi, int(val)))
@@ -428,11 +440,11 @@ def _clamp(val, lo=1, hi=100) -> int:
         return lo
 
 
-def right_mouse_click():
+def right_mouse_click(hold_seconds: float = 0.0):
     focus_nms()
     time.sleep(0.05)
     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-    time.sleep(0.1)
+    time.sleep(float(hold_seconds) if hold_seconds > 0 else 0.1)
     win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
 
 
@@ -648,17 +660,17 @@ def land(args=None):
 
 
 def left_click_cmd(args=None):
-    """Click the left mouse button once"""
-    left_click()
+    """Click or hold the left mouse button for up to 10 seconds."""
+    left_click(_click_hold_seconds(args))
 
 
 def right_click_cmd(args=None):
     global _autowalk_enabled
-    """Click the right mouse button once"""
+    """Click or hold the right mouse button for up to 10 seconds."""
     _autowalk_enabled = False
     _reset_stuck()
     focus_nms()
-    right_mouse_click()
+    right_mouse_click(_click_hold_seconds(args))
 
 
 def coords(args=None):
@@ -851,8 +863,8 @@ COMMANDS: dict[str, Command] = {
     "hold_e":  Command(hold_e,  "Hold the interact key for 5 seconds."),
     "launch":  Command(launch,  "While in a ship, hold the forward key for 5 seconds to launch."),
     "land":    Command(land,    "While in a ship, tap the interact key once to attempt to land."),
-    "left_click": Command(left_click_cmd, "Click the left mouse button once.", aliases=("lc",)),
-    "right_click": Command(right_click_cmd, "Click the right mouse button once.", aliases=("rc",)),
+    "left_click": Command(left_click_cmd, "Click or hold left mouse for up to 10 seconds. e.g. !lc 5", aliases=("lc",)),
+    "right_click": Command(right_click_cmd, "Click or hold right mouse for up to 10 seconds. e.g. !rc 5", aliases=("rc",)),
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
     "teleport": Command(teleport, "!teleport [address=HEX] [galaxy=NUMBER] | No options selects a random planet in a random galaxy. galaxy=NUMBER selects a random planet in that galaxy. address=HEX selects that location in the current galaxy. Use both to select a specific location in a specific galaxy."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),

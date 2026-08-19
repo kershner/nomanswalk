@@ -371,15 +371,15 @@ class NMSBot(commands.Bot):
 
         if not teleport_vote_response:
             if not runtime_game.get("startup_ready", False):
-                await self._say(ctx, "Game loading — please wait.")
+                await self._say(ctx, "Game loading; please wait.")
                 return
 
             if runtime_game.get("planet_loading", False):
-                await self._say(ctx, "Planet loading — please wait.")
+                await self._say(ctx, "Planet loading; please wait.")
                 return
 
         if self._lockout_command:
-            await self._say(ctx, f"!{self._lockout_command} is running — please wait.")
+            await self._say(ctx, f"!{self._lockout_command} is running; please wait.")
             return
 
         canonical_name = get_canonical_command_name(name)
@@ -772,7 +772,7 @@ class NMSBot(commands.Bot):
 
                 if passed:
                     if is_teleport and not is_command_allowed(name):
-                        await self._say(ctx, "Teleport cancelled — the Walker is no longer on a planet.")
+                        await self._say(ctx, "Teleport cancelled because the Walker is no longer on a planet.")
                         return
 
                     passed_text = f"Destination: {teleport_text}" if is_teleport else help_text
@@ -1018,7 +1018,7 @@ class NMSBot(commands.Bot):
                 args.append(f"galaxy={galaxy}")
 
         if is_planet_loading():
-            await self._say(ctx, "Planet loading — please wait before sending commands.")
+            await self._say(ctx, "Planet loading; please wait before sending commands.")
             return
 
         if name in Config.VOTABLE_COMMANDS:
