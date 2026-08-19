@@ -1,4 +1,4 @@
-from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, _normalize_teleport_destination, cancel_movement, get_canonical_command_name, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, _normalize_teleport_destination, cancel_movement, get_canonical_command_name, get_command_state, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
 from galaxy_names import get_galaxy_name
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_info_text, get_location_text
@@ -430,6 +430,10 @@ class NMSBot(commands.Bot):
             log(f"Command worker: no func found for !{name}")
             return
 
+        if get_canonical_command_name(name) == "teleport" and not is_command_allowed(name):
+            log(f"Command worker: !{name} cancelled because it is no longer allowed in the current location.")
+            return
+
         lockout = name in Config.LOCKOUT_COMMANDS
         if lockout:
             self._lockout_command = name
@@ -681,6 +685,10 @@ class NMSBot(commands.Bot):
         vote = self._teleport_vote if is_teleport else self._vote
         duration = Config.TELEPORT_VOTING_DURATION if is_teleport else Config.VOTING_DURATION
 
+        if is_teleport and not is_command_allowed(name):
+            await self._say(ctx, "!teleport is only available while the Walker is on a planet.")
+            return
+
         if vote.active:
             await self._say(ctx, "Teleport vote already in progress." if is_teleport else "Vote already in progress.")
             return
@@ -741,6 +749,10 @@ class NMSBot(commands.Bot):
                 help_text = f"{cmd.help}" if cmd and cmd.help else ""
 
                 if passed:
+                    if is_teleport and not is_command_allowed(name):
+                        await self._say(ctx, "Teleport cancelled — the Walker is no longer on a planet.")
+                        return
+
                     passed_text = f"Destination: {teleport_text}" if is_teleport else help_text
                     await self._say(ctx, f"Vote passed! ({yes}-{no}) • {passed_text}")
                     if is_teleport:
@@ -962,7 +974,11 @@ class NMSBot(commands.Bot):
 
         state = NMSState.get()
         if not is_command_allowed(name, state):
-            await self._say(ctx, f"!{name} is not available while {state.lower().replace('_', ' ')}.")
+            if get_canonical_command_name(name) == "teleport":
+                await self._say(ctx, "!teleport is only available while the Walker is on a planet.")
+            else:
+                command_state = get_command_state(fallback_state=state)
+                await self._say(ctx, f"!{name} is not available in the {command_state} state.")
             return
 
         if name == "teleport" and args:

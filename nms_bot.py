@@ -1,4 +1,5 @@
 from utils import focus_nms, send_key, log
+from command_block_lists import blocked_commands_for_state, resolve_command_state
 from dataclasses import dataclass
 from typing import Callable
 import threading
@@ -32,25 +33,6 @@ PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after telep
 RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
 MAX_WALK_SAMPLE_DISTANCE = 500.0
 
-
-BLOCKED_COMMANDS_BY_STATE = {
-    "ON_FOOT": {
-        "launch",
-        "land",
-        "anomaly",
-        "boost",
-    },
-    "NOT_ON_FOOT": {
-        "dig",
-        "sky",
-        "jet",
-        "walk",
-        "coords",
-        "ship",
-        "pet",
-        "dance",
-    },
-}
 
 _autowalk_enabled = False
 _last_xy = None
@@ -275,6 +257,12 @@ class NMSState:
     def get_data(cls) -> dict:
         with cls._lock:
             return dict(cls._data)
+
+
+def get_command_state(data: dict | None = None, fallback_state: str | None = None) -> str:
+    """Return the granular state used by the command block lists."""
+    snapshot = NMSState.get_data() if data is None else data
+    return resolve_command_state(snapshot, fallback_state or NMSState.get())
 
 
 def poll_state():
@@ -812,6 +800,10 @@ def _write_teleport_request(address: str | None, galaxy: int | None = None) -> N
 
 def teleport(args=None):
     """Teleport to a portal address in an optional galaxy, or randomly when omitted."""
+    if not is_command_allowed("teleport"):
+        log("Teleport ignored: the player is not on a planet.")
+        return
+
     address, galaxy = _normalize_teleport_destination(args)
 
     if address or galaxy is not None:
@@ -894,13 +886,10 @@ def get_canonical_command_name(name: str) -> str:
     return name
 
 
-def is_command_allowed(name: str, state: str | None = None) -> bool:
+def is_command_allowed(name: str, state: str | None = None, data: dict | None = None) -> bool:
     canonical_name = get_canonical_command_name(name)
-    state = state or NMSState.get()
-    if canonical_name == "cruise":
-        return state == "NOT_ON_FOOT"
-    blocked_commands = BLOCKED_COMMANDS_BY_STATE.get(state, set())
-    return canonical_name not in blocked_commands
+    command_state = get_command_state(data, fallback_state=state)
+    return canonical_name not in blocked_commands_for_state(command_state)
 
 
 def main():
