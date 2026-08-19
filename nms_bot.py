@@ -694,6 +694,10 @@ def dance(args=None):
     send_key("5", 0.1)
 
 
+def sit(args=None):
+    send_key("6", 0.1)
+
+
 def inventory(args=None):
     if _boost_enabled:
         _set_boost(False)
@@ -856,6 +860,7 @@ COMMANDS: dict[str, Command] = {
     "anomaly": Command(anomaly, "Select the Space Anomaly placement quickslot."),
     "pet": Command(pet, "Select the Walker's pet placement quickslot."),
     "dance": Command(dance, "Make the Walker dance."),
+    "sit": Command(sit, "Make the Walker sit."),
     "inventory": Command(inventory, "Open the inventory."),
     "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
     "hud": Command(hud, "Toggle the in-game HUD."),

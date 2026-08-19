@@ -52,6 +52,7 @@ IN_COCKPIT_BLOCKED_COMMANDS = [
     "ship",
     "pet",
     "dance",
+    "sit",
 ]
 
 # Add commands here to block them in every planetary environment.
