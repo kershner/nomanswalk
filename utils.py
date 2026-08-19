@@ -164,12 +164,21 @@ def get_info_text(countdown: str = "") -> str:
             parts.append(f"Galaxy: {galaxy_name}")
         if countdown:
             parts.append(f"Next planet vote in {countdown}")
-        parts.append(
-            f"Today: {stats['distance_walked']:,.0f}u walked • "
-            f"{stats['planets_visited']} {'planet' if stats['planets_visited'] == 1 else 'planets'} visited • "
-            f"{stats['walkers']} {'walker' if stats['walkers'] == 1 else 'walkers'} • "
-            f"{stats['commands']} {'command' if stats['commands'] == 1 else 'commands'}"
-        )
+        today = []
+        distance_walked = f"{stats['distance_walked']:,.0f}"
+        if distance_walked != "0":
+            today.append(f"{distance_walked}u walked")
+        if stats["planets_visited"]:
+            today.append(
+                f"{stats['planets_visited']} "
+                f"{'planet' if stats['planets_visited'] == 1 else 'planets'} visited"
+            )
+        if stats["walkers"]:
+            today.append(f"{stats['walkers']} {'walker' if stats['walkers'] == 1 else 'walkers'}")
+        if stats["commands"]:
+            today.append(f"{stats['commands']} {'command' if stats['commands'] == 1 else 'commands'}")
+        if today:
+            parts.append(f"Today: {' • '.join(today)}")
         return " • ".join(parts)
     except Exception as e:
         log(f"get_info_text failed: {e}")
@@ -224,4 +233,3 @@ def get_location_text() -> str:
     except Exception as e:
         log(f"get_location_text failed: {e}")
         return "Could not read location state."
-

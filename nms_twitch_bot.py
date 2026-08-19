@@ -33,6 +33,7 @@ class Config:
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
     SCHEDULED_COMMAND_INTERVAL = 20 * 60
+    RECENT_LOCATION_SKIP_WINDOW = 20 * 60
     STREAM_INFO_UPDATE_INTERVAL = 5 * 60
     SCHEDULED_COMMANDS = [
         "_do_help",
@@ -268,6 +269,7 @@ class NMSBot(commands.Bot):
         self._scheduler_task: Optional[asyncio.Task] = None
         self._refresh_loop_task: Optional[asyncio.Task] = None
         self._stream_info_update_task: Optional[asyncio.Task] = None
+        self._last_location_announcement_at: Optional[float] = None
 
         super().__init__(
             token=self._access_token,
@@ -554,15 +556,12 @@ class NMSBot(commands.Bot):
 
             channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
             handler_name = Config.SCHEDULED_COMMANDS[index]
-            handler = getattr(self, handler_name, None)
 
-            if channel and handler is not None:
+            if channel:
                 try:
-                    await handler(channel)
+                    await self._run_scheduled_handler(channel, handler_name)
                 except Exception as e:
                     log(f"Scheduler: '{handler_name}' failed: {e}")
-            elif handler is None:
-                log(f"Scheduler: unknown handler '{handler_name}', skipping.")
 
             index = (index + 1) % len(Config.SCHEDULED_COMMANDS)
             next_run += interval
@@ -570,6 +569,29 @@ class NMSBot(commands.Bot):
             now = time.monotonic()
             while next_run <= now:
                 next_run += interval
+
+    async def _run_scheduled_handler(self, channel, handler_name: str):
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            log(f"Scheduler: unknown handler '{handler_name}', skipping.")
+            return
+
+        if handler_name == "_do_location":
+            if self._consume_recent_location_announcement():
+                log("Scheduler: skipping one recent location announcement.")
+                return
+            await handler(channel, mark_recent=False)
+            return
+
+        await handler(channel)
+
+    def _consume_recent_location_announcement(self) -> bool:
+        announced_at = self._last_location_announcement_at
+        self._last_location_announcement_at = None
+        return (
+            announced_at is not None
+            and time.monotonic() - announced_at <= Config.RECENT_LOCATION_SKIP_WINDOW
+        )
 
     async def _teleport_loop(self):
         """Every _teleport_interval_s (from startup) start a vote to teleport to a new planet."""
@@ -860,8 +882,10 @@ class NMSBot(commands.Bot):
     async def cmd_location(self, ctx: commands.Context):
         await self._do_location(ctx)
 
-    async def _do_location(self, ctx):
+    async def _do_location(self, ctx, mark_recent=True):
         await self._say(ctx, f"🌎{get_location_text()}")
+        if mark_recent:
+            self._last_location_announcement_at = time.monotonic()
 
     def _format_countdown(self) -> str:
         """Return a human-readable countdown to the next auto-teleport, e.g. '3h24m'."""
