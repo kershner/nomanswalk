@@ -8,6 +8,7 @@ from twitchio.ext import commands
 from typing import Optional
 import nms_bluesky
 import subprocess
+import psutil
 import aiohttp
 import requests
 import asyncio
@@ -15,6 +16,7 @@ import json
 import time
 import pytz
 import os
+import sys
 
 
 # ─────────────────────────────────────────────────────────────
@@ -35,6 +37,8 @@ class Config:
     SCHEDULED_COMMAND_INTERVAL = 20 * 60
     RECENT_LOCATION_SKIP_WINDOW = 20 * 60
     STREAM_INFO_UPDATE_INTERVAL = 5 * 60
+    NMS_CRASH_POLL_INTERVAL = 5
+    NMS_CRASH_MISSES = 3
     SCHEDULED_COMMANDS = [
         "_do_help",
         "_do_location",
@@ -268,6 +272,7 @@ class NMSBot(commands.Bot):
         self._scheduler_task: Optional[asyncio.Task] = None
         self._refresh_loop_task: Optional[asyncio.Task] = None
         self._stream_info_update_task: Optional[asyncio.Task] = None
+        self._nms_crash_monitor_task: Optional[asyncio.Task] = None
         self._last_location_announcement_at: Optional[float] = None
 
         super().__init__(
@@ -318,6 +323,10 @@ class NMSBot(commands.Bot):
                 log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
 
         if not self._dev_mode:
+            if self._nms_crash_monitor_task is None or self._nms_crash_monitor_task.done():
+                self._nms_crash_monitor_task = asyncio.create_task(self._nms_crash_monitor_loop())
+                log("NMS crash monitor started.")
+
             if self._stream_info_update_task is None or self._stream_info_update_task.done():
                 self._stream_info_update_task = asyncio.create_task(self._stream_info_update_loop())
                 log("Stream info background updater started (every 5 minutes).")
@@ -543,6 +552,45 @@ class NMSBot(commands.Bot):
                 await asyncio.sleep(sleep_s)
             except Exception:
                 await asyncio.sleep(300)
+
+    @staticmethod
+    def _is_nms_running() -> bool:
+        for process in psutil.process_iter(["name"]):
+            try:
+                if (process.info["name"] or "").lower() == "nms.exe":
+                    return True
+            except psutil.Error:
+                pass
+        return False
+
+    async def _nms_crash_monitor_loop(self):
+        missing_checks = 0
+
+        while True:
+            await asyncio.sleep(Config.NMS_CRASH_POLL_INTERVAL)
+
+            if await asyncio.to_thread(self._is_nms_running):
+                missing_checks = 0
+                continue
+
+            missing_checks += 1
+            if missing_checks < Config.NMS_CRASH_MISSES:
+                continue
+
+            channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
+            if channel:
+                await self._say(channel, "No Man's Sky crashed. Restarting now; commands will be unavailable temporarily.")
+
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            try:
+                await asyncio.wait_for(self.close(), timeout=5)
+            except Exception as e:
+                log(f"Twitch bot close during crash restart failed: {e}")
+            os.execv(
+                sys.executable,
+                [sys.executable, os.path.join(base_dir, "start_no_mans_walk.py"), "--mode", "twitch"],
+            )
+            return
 
     async def _start_schedulers(self):
         """Run exactly one scheduled chat command every 20 minutes, in rotation."""
