@@ -858,7 +858,7 @@ COMMANDS: dict[str, Command] = {
     "dance": Command(dance, "Make the Walker dance."),
     "inventory": Command(inventory, "Open the inventory."),
     "music": Command(music, "Start a vote to toggle the stream's in-game music on/off."),
-    "hud": Command(hud, "Toggle the HUD.", hidden=True),
+    "hud": Command(hud, "Toggle the in-game HUD."),
     "day": Command(day, "Force the current planet to daytime."),
     "night": Command(night, "Force the current planet to nighttime."),
     "resume_time": Command(resume_time, "Return to the planet's normal day/night cycle."),
