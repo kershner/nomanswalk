@@ -33,6 +33,7 @@ class Config:
     TOKEN_REFRESH_SKEW_S = 60  # refresh ~1 minute before expiry
 
     SCHEDULED_COMMAND_INTERVAL = 20 * 60
+    STREAM_INFO_UPDATE_INTERVAL = 5 * 60
     SCHEDULED_COMMANDS = [
         "_do_help",
         "_do_location",
@@ -266,7 +267,7 @@ class NMSBot(commands.Bot):
         self._shutdown_loop_task: Optional[asyncio.Task] = None
         self._scheduler_task: Optional[asyncio.Task] = None
         self._refresh_loop_task: Optional[asyncio.Task] = None
-        self._stream_info_watch_task: Optional[asyncio.Task] = None
+        self._stream_info_update_task: Optional[asyncio.Task] = None
 
         super().__init__(
             token=self._access_token,
@@ -316,9 +317,9 @@ class NMSBot(commands.Bot):
                 log(f"Teleport loop started — first teleport in {self._teleport_interval_s // 3600}h.")
 
         if not self._dev_mode:
-            if self._stream_info_watch_task is None or self._stream_info_watch_task.done():
-                self._stream_info_watch_task = asyncio.create_task(self._stream_info_watch_loop())
-                log("Stream info state watcher started.")
+            if self._stream_info_update_task is None or self._stream_info_update_task.done():
+                self._stream_info_update_task = asyncio.create_task(self._stream_info_update_loop())
+                log("Stream info background updater started (every 5 minutes).")
 
             if self._refresh_loop_task is None or self._refresh_loop_task.done():
                 self._refresh_loop_task = asyncio.create_task(self._refresh_loop())
@@ -837,24 +838,23 @@ class NMSBot(commands.Bot):
         title = info.split(" • Today:", 1)[0]
         if announce:
             await self._say(ctx, f"🪐{info}")
+        await self._refresh_stream_presence(title)
+
+    async def _refresh_stream_presence(self, title: str = ""):
+        """Silently update Twitch stream info and Bluesky Live status."""
+        title = title or get_info_text(countdown=self._format_countdown()).split(" • Today:", 1)[0]
         await self._update_stream_info(title=title)
         if self._bsky:
-            nms_bluesky.ensure_live(self._bsky, title)
+            await asyncio.to_thread(nms_bluesky.ensure_live, self._bsky, title)
 
-    async def _stream_info_watch_loop(self):
-        last_location = get_info_text().split(" • Today:", 1)[0]
+    async def _stream_info_update_loop(self):
+        """Refresh stream metadata every five minutes without writing to chat."""
         while True:
-            await asyncio.sleep(1)
-            location = get_info_text().split(" • Today:", 1)[0]
-            if location == last_location:
-                continue
-
-            channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
-            if not channel:
-                continue
-
-            await self._do_info(channel, announce=False)
-            last_location = location
+            try:
+                await self._refresh_stream_presence()
+            except Exception as e:
+                log(f"Stream info background update failed: {e}")
+            await asyncio.sleep(Config.STREAM_INFO_UPDATE_INTERVAL)
 
     @commands.command(name="location", aliases=("loc",))
     async def cmd_location(self, ctx: commands.Context):
