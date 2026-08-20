@@ -471,23 +471,24 @@ def _movement_cancelled(generation: int | None) -> bool:
     return generation is not None and generation != get_movement_generation()
 
 
-def _hold_movement_key(key: str, duration: float, generation: int | None):
+def _hold_movement_key(key: str, duration: float, generation: int | None) -> bool:
     if _movement_cancelled(generation):
-        return
+        return False
 
     hwnd, _ = focus_nms()
     if not hwnd or _movement_cancelled(generation):
-        return
+        return False
 
     keyboard.press(key)
     try:
         end = time.monotonic() + max(0.0, float(duration))
         while time.monotonic() < end:
             if _movement_cancelled(generation):
-                return
+                return False
             time.sleep(min(0.05, end - time.monotonic()))
     finally:
         keyboard.release(key)
+    return True
 
 
 def jet(args=None, movement_generation=None):
@@ -506,18 +507,27 @@ def sky(args=None):
     
 
 def walk(args=None, movement_generation=None):
-    global _autowalk_enabled, _last_move_t, _last_xy
-    """Toggle autowalk (backslash)"""
+    global _autowalk_enabled
+    """Start autowalk and begin a fresh stuck-check cycle."""
     if _boost_enabled:
         _set_boost(False)
     if _movement_cancelled(movement_generation):
         return
-    _hold_movement_key("k", 0.1, movement_generation)
-    if _movement_cancelled(movement_generation):
+
+    # Manual movement exits sitting, dancing, and other emotes. Emote commands
+    # clear _autowalk_enabled, so K is only pressed when autowalk needs starting.
+    if not _hold_movement_key("w", 0.1, movement_generation):
         return
-    _autowalk_enabled = not _autowalk_enabled
-    _last_move_t = time.time()
-    _last_xy = None
+    if not _autowalk_enabled and not _hold_movement_key("k", 0.1, movement_generation):
+        return
+
+    # Commit the walking/checker state atomically with respect to !stop's
+    # generation bump, so a cancelled !walk cannot turn checking back on.
+    with _movement_generation_lock:
+        if movement_generation is not None and movement_generation != _movement_generation:
+            return
+        _autowalk_enabled = True
+        _reset_stuck()
 
 
 def stop(args=None):
@@ -703,10 +713,12 @@ def pet(args=None):
 
 
 def dance(args=None):
+    stop()
     send_key("5", 0.1)
 
 
 def sit(args=None):
+    stop()
     send_key("6", 0.1)
 
 
@@ -847,7 +859,7 @@ COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "On foot: hold the jetpack key for 2.5 seconds.", aliases=("j",)),
     "dig":     Command(dig,     "Hold the left mouse button for 10 seconds to dig terrain."),
     "sky":     Command(sky,     "Drop the Walker from high above the planet."),
-    "walk":    Command(walk,    "Toggle continuous forward walking on/off.", aliases=("w",)),
+    "walk":    Command(walk,    "Start continuous forward walking.", aliases=("w",)),
     "stop":    Command(stop,    "Stop all active and queued movement immediately.", aliases=("s",)),
     "cruise":  Command(cruise,  "While in a ship, toggle holding the forward key continuously on/off."),
     "boost":   Command(boost,   "While in a ship, toggle holding forward + boost continuously on/off.", aliases=("engage",)),

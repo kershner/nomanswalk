@@ -38,6 +38,8 @@ class Config:
     RECENT_LOCATION_SKIP_WINDOW = 20 * 60
     STREAM_INFO_UPDATE_INTERVAL = 5 * 60
     STREAM_INFO_STATE_POLL_INTERVAL = 1
+    STARTUP_STATUS = "Starting up • No Man's Walk will be online shortly"
+    SHUTDOWN_STATUS = "Shutting down • The Walker will be back in the morning"
     NMS_CRASH_POLL_INTERVAL = 5
     NMS_CRASH_MISSES = 3
     SCHEDULED_COMMANDS = [
@@ -75,8 +77,8 @@ class Config:
     }
 
     COMMAND_FEEDBACK = {
-        "walk": "Autowalk toggled.",
-        "w": "Autowalk toggled.",
+        "walk": "Autowalk started.",
+        "w": "Autowalk started.",
         "stop": "All movement stopped.",
         "s": "All movement stopped.",
         "cruise": "Cruise toggled.",
@@ -273,6 +275,7 @@ class NMSBot(commands.Bot):
         self._scheduler_task: Optional[asyncio.Task] = None
         self._refresh_loop_task: Optional[asyncio.Task] = None
         self._stream_info_update_task: Optional[asyncio.Task] = None
+        self._stream_presence_override: Optional[str] = None
         self._nms_crash_monitor_task: Optional[asyncio.Task] = None
         self._last_location_announcement_at: Optional[float] = None
 
@@ -360,8 +363,15 @@ class NMSBot(commands.Bot):
         log(f"Connected to Twitch as {self.nick}")
         channel = self.get_channel(Config.TWITCH_CHANNEL)
         if channel:
+            if not get_runtime_game_state().get("startup_ready", False):
+                self._stream_presence_override = Config.STARTUP_STATUS
+                try:
+                    await self._refresh_stream_presence()
+                except Exception as e:
+                    log(f"Startup presence update failed: {e}")
             while not get_runtime_game_state().get("startup_ready", False):
                 await asyncio.sleep(0.5)
+            self._stream_presence_override = None
             await self._start_runtime(channel)
 
     async def process_chat_message(self, ctx, content: str, message=None):
@@ -696,6 +706,8 @@ class NMSBot(commands.Bot):
                             f"{minutes_until} minutes. "
                             "The Walker will be back in the morning, see you then!"
                         )
+                    self._stream_presence_override = Config.SHUTDOWN_STATUS
+                    await self._refresh_stream_presence()
 
                 # ── Shutdown ───────────────────────────────────────────────
                 elif minutes_until > 1430 and last_shutdown_date != now.date():
@@ -912,7 +924,11 @@ class NMSBot(commands.Bot):
 
     async def _refresh_stream_presence(self, title: str = ""):
         """Silently update Twitch stream info and Bluesky Live status."""
-        title = title or get_info_text(countdown=self._format_countdown()).split(" • Today:", 1)[0]
+        title = (
+            self._stream_presence_override
+            or title
+            or get_info_text(countdown=self._format_countdown()).split(" • Today:", 1)[0]
+        )
         await self._update_stream_info(title=title)
         if self._bsky:
             await asyncio.to_thread(nms_bluesky.ensure_live, self._bsky, title)
