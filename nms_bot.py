@@ -34,7 +34,7 @@ class SelfieConfig:
     """Editable timing values for the selfie sequence."""
 
     GESTURE_HOTKEY = "7"             # Gesture quickslot
-    GESTURE_DELAY_SECONDS = 1         # Wait before photo mode
+    GESTURE_DELAY_SECONDS = 3.75         # Wait before photo mode
     PHOTO_MODE_SETTLE_SECONDS = 1     # Wait for photo mode
 
     CONFIRM_SECONDS = 20              # Confirmation window

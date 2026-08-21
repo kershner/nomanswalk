@@ -1402,6 +1402,13 @@ class NMSBot(commands.Bot):
             await self._start_vote(ctx, name, args)
             return
 
+        # A voted selfie is started by _start_vote after the vote passes. When
+        # selfie voting is disabled, preserve that same full workflow instead
+        # of falling through to the registry's gesture-only helper.
+        if name == "selfie":
+            await self._start_selfie(ctx, args, requested_by=ctx.author.name)
+            return
+
         await self._submit_command(name, args)
 
         feedback = Config.COMMAND_FEEDBACK.get(name)
