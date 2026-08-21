@@ -26,7 +26,7 @@ import traceback
 from typing import Annotated
 
 from pymhf import Mod
-from pymhf.core.hooking import Structure, function_hook
+from pymhf.core.hooking import Structure, function_hook, on_key_pressed
 
 import nmspy.data.basic_types as basic
 from nmspy.common import gameData
@@ -38,6 +38,7 @@ from shared_state import _make_logger
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REQUEST_FILE = os.path.join(_BASE_DIR, "selfie_camera_request.json")
 STATUS_FILE = os.path.join(_BASE_DIR, "selfie_camera_status.json")
+CAPTURE_FILE = os.path.join(_BASE_DIR, "selfie_camera_capture.json")
 READY_FRAMES = 3
 
 # Permanent player-relative pose captured in photo mode on 2026-08-20.
@@ -138,6 +139,45 @@ def _subtract(a, b):
     return tuple(a[index] - b[index] for index in range(3))
 
 
+def _local(vector, basis):
+    return [_dot(vector, axis) for axis in basis]
+
+
+def _capture_pose(camera):
+    player = gameData.player
+    if player is None:
+        raise RuntimeError("player is unavailable")
+
+    player_matrix = GetNodeAbsoluteTransMatrix(player.mRootNode)
+    basis = tuple(
+        _normalise(_xyz(axis))
+        for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
+    )
+    camera_matrix = camera.contents.matrix
+    camera_position = tuple(
+        local + offset
+        for local, offset in zip(
+            _xyz(camera_matrix.pos.local),
+            _xyz(camera_matrix.pos.offset),
+        )
+    )
+    position_delta = _subtract(camera_position, _xyz(player_matrix.pos))
+    if not all(math.isfinite(value) for value in position_delta):
+        raise ValueError("invalid camera position")
+    if _length(position_delta) > 100:
+        raise ValueError("camera position is outside the safe capture range")
+
+    pose = {
+        "position": _local(position_delta, basis),
+        "right": _local(_normalise(_xyz(camera_matrix.right)), basis),
+        "up": _local(_normalise(_xyz(camera_matrix.up)), basis),
+        "at": _local(_normalise(_xyz(camera_matrix.at)), basis),
+        "fov": float(gameData.player_state.mPhotoModeSettings.FoV),
+    }
+    _atomic_json(CAPTURE_FILE, pose)
+    return pose
+
+
 def _apply_pose(camera, set_position=True):
     player = gameData.player
     if player is None:
@@ -206,7 +246,12 @@ class SelfieCamera(Mod):
         self._expires_at = 0.0
         self._ready_frames = 0
         self._request_mtime = None
+        self._capture_requested = False
         _log.info("Selfie camera loaded with permanent pose")
+
+    @on_key_pressed("f11")
+    def request_capture(self):
+        self._capture_requested = True
 
     def _clear(self):
         self._request_id = None
@@ -262,6 +307,13 @@ class SelfieCamera(Mod):
 
     @_PhotoModeCameraBehaviour.Update.after
     def after_photo_camera_update(self, this, lfTimeStep, camera):
+        if self._capture_requested:
+            self._capture_requested = False
+            try:
+                pose = _capture_pose(camera)
+                _log.info("Captured production selfie pose: %s", pose)
+            except Exception:
+                _log.error("Selfie camera capture failed:\n%s", traceback.format_exc())
         if not self._request_id:
             return
         try:
