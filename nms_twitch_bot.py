@@ -277,7 +277,7 @@ def _build_selfie_caption(viewer, state):
     planet_name = planet.get("name") or "an unknown world"
     lines = [
         f"Greetings from {planet_name}!",
-        f"Selfie requested live by Twitch viewer @{viewer}.",
+        f"Selfie requested by Twitch viewer @{viewer}.",
     ]
 
     details = []
