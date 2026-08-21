@@ -61,6 +61,7 @@ _stuck_last_cmd = None
 _last_unstuck_t = 0.0
 _cruise_enabled = False
 _boost_enabled = False
+_autowalk_command_lock = threading.Lock()
 
 MOVEMENT_COMMANDS = {
     "jet", "walk", "cruise", "boost", "forward", "back",
@@ -585,36 +586,46 @@ def sky(args=None):
 def walk(args=None, movement_generation=None):
     global _autowalk_enabled
     """Start autowalk and begin a fresh stuck-check cycle."""
-    if _boost_enabled:
-        _set_boost(False)
-    if _movement_cancelled(movement_generation):
-        return
-
-    # Manual movement exits sitting, dancing, and other emotes. Emote commands
-    # clear _autowalk_enabled, so K is only pressed when autowalk needs starting.
-    if not _hold_movement_key("w", 0.1, movement_generation):
-        return
-    if not _autowalk_enabled and not _hold_movement_key("k", 0.1, movement_generation):
-        return
-
-    # Commit the walking/checker state atomically with respect to !stop's
-    # generation bump, so a cancelled !walk cannot turn checking back on.
-    with _movement_generation_lock:
-        if movement_generation is not None and movement_generation != _movement_generation:
+    with _autowalk_command_lock:
+        if _movement_cancelled(movement_generation):
             return
-        _autowalk_enabled = True
-        _reset_stuck()
+
+        # K is an in-game toggle, so an already-active !walk must be a no-op.
+        # Tapping W again would cancel the game's autowalk while leaving this
+        # flag true, causing consecutive !walk commands to disagree with NMS.
+        if _autowalk_enabled:
+            _reset_stuck()
+            return
+
+        if _boost_enabled:
+            _set_boost(False)
+
+        # Manual movement exits sitting, dancing, and other emotes before K
+        # enables autowalk.
+        if not _hold_movement_key("w", 0.1, movement_generation):
+            return
+        if not _hold_movement_key("k", 0.1, movement_generation):
+            return
+
+        # Commit the walking/checker state atomically with respect to !stop's
+        # generation bump, so a cancelled !walk cannot turn checking back on.
+        with _movement_generation_lock:
+            if movement_generation is not None and movement_generation != _movement_generation:
+                return
+            _autowalk_enabled = True
+            _reset_stuck()
 
 
 def stop(args=None):
     global _autowalk_enabled, _cruise_enabled, _boost_enabled
     """Stop all movement and end autowalk/cruise/boost."""
-    _autowalk_enabled = False
-    _cruise_enabled = False
-    _boost_enabled = False
-    _reset_stuck()
-    keyboard.release("shift")
-    send_key("w", 0.1)
+    with _autowalk_command_lock:
+        _autowalk_enabled = False
+        _cruise_enabled = False
+        _boost_enabled = False
+        _reset_stuck()
+        keyboard.release("shift")
+        send_key("w", 0.1)
 
 
 def _set_cruise(enabled: bool, movement_generation=None):

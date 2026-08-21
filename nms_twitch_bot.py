@@ -664,7 +664,7 @@ class NMSBot(commands.Bot):
             await self._say(
                 ctx,
                 f"@{session.requested_by}, selfie ready! Use !selfie_confirm within "
-                f"{SelfieConfig.CONFIRM_SECONDS} seconds.",
+                f"{SelfieConfig.CONFIRM_SECONDS} seconds to take it, or do nothing to cancel.",
             )
             try:
                 await asyncio.wait_for(session.confirm_event.wait(), timeout=SelfieConfig.CONFIRM_SECONDS)
