@@ -11,6 +11,7 @@ Standalone (creates a clip and posts it autonomously):
 from atproto import Client
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
+from PIL import Image, ImageOps
 from utils import get_info_text
 import requests
 import httpx
@@ -208,6 +209,7 @@ def _download_clip(clip_id, headers, broadcaster_id):
 # Post a clip to Bluesky
 # ─────────────────────────────────────────────────────────────
 BLUESKY_MAX_TEXT = 300
+BLUESKY_MAX_IMAGE_BYTES = 1_000_000
 
 
 def _fit_post_text(status_text: str, tag_line: str) -> str:
@@ -216,6 +218,63 @@ def _fit_post_text(status_text: str, tag_line: str) -> str:
     if len(status_text) > available:
         status_text = status_text[:max(0, available - 1)].rstrip() + "…"
     return f"{status_text}{suffix}"
+
+
+def _prepare_image(image_path: str):
+    """Return a Bluesky-sized JPEG and its pixel dimensions."""
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        width, height = image.size
+
+        while True:
+            for quality in (92, 86, 80, 74, 68, 60, 52, 44):
+                output = BytesIO()
+                image.save(output, format="JPEG", quality=quality, optimize=True)
+                data = output.getvalue()
+                if len(data) <= BLUESKY_MAX_IMAGE_BYTES:
+                    return data, width, height
+
+            width = max(1, int(width * 0.85))
+            height = max(1, int(height * 0.85))
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+
+def post_selfie(bsky_client: Client, image_path: str, caption: str):
+    """Upload a local screenshot as a Bluesky image post."""
+    if bsky_client is None:
+        raise RuntimeError("Bluesky client is unavailable")
+
+    image_data, width, height = _prepare_image(image_path)
+    blob = bsky_client.com.atproto.repo.upload_blob(
+        BytesIO(image_data),
+        headers={"Content-Type": "image/jpeg"},
+    ).blob
+    text = _clamp(caption, BLUESKY_MAX_TEXT)
+    record = {
+        "text": text,
+        "createdAt": bsky_client.get_current_time_iso(),
+        "embed": {
+            "$type": "app.bsky.embed.images",
+            "images": [{
+                "$type": "app.bsky.embed.images#image",
+                "alt": text,
+                "image": blob,
+                "aspectRatio": {"width": width, "height": height},
+            }],
+        },
+    }
+    result = bsky_client.com.atproto.repo.create_record(
+        data={"repo": bsky_client.me.did, "collection": "app.bsky.feed.post", "record": record}
+    )
+    log.info(f"Posted selfie to Bluesky: {text}")
+    uri = getattr(result, "uri", None)
+    if uri is None and isinstance(result, dict):
+        uri = result.get("uri")
+    if uri and "/app.bsky.feed.post/" in uri:
+        rkey = uri.rsplit("/", 1)[-1]
+        actor = getattr(bsky_client.me, "handle", None) or bsky_client.me.did
+        return f"https://bsky.app/profile/{actor}/post/{rkey}"
+    return None
 
 
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = "", status_text: str = ""):

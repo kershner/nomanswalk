@@ -1,5 +1,18 @@
-from nms_bot import COMMANDS, MOVEMENT_COMMANDS, NMSState, _normalize_teleport_destination, cancel_movement, get_canonical_command_name, get_command_state, get_movement_generation, is_command_allowed, start_state_poller, left_click, is_planet_loading, record_daily_command, get_runtime_game_state
+from nms_bot import (
+    COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig,
+    _normalize_teleport_destination, cancel_movement, end_selfie_gesture,
+    enter_photo_mode, exit_photo_mode, get_canonical_command_name,
+    get_command_state, get_daily_selfie_uploads, get_movement_generation,
+    get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
+    is_planet_loading, left_click,
+    position_selfie_camera, record_daily_command, record_daily_selfie_upload,
+    start_selfie_gesture, start_state_poller,
+)
 from galaxy_names import get_galaxy_name
+from steam_screenshots import (
+    delete_screenshot, find_nms_screenshot_dir, snapshot_screenshots,
+    wait_for_new_screenshot,
+)
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_info_text, get_location_text
 from datetime import datetime, timedelta
@@ -73,6 +86,7 @@ class Config:
         "camera",
         "coords",
         "music",
+        "selfie",
         "teleport",
     }
 
@@ -238,6 +252,16 @@ class VoteState:
         self.task = None
 
 
+@dataclass
+class SelfieSession:
+    requested_by: str
+    confirm_event: asyncio.Event
+    phase: str = "starting"
+    gesture_started: bool = False
+    photo_mode_entered: bool = False
+    upload_available: bool = True
+
+
 # ─────────────────────────────────────────────────────────────
 # BOT
 # ─────────────────────────────────────────────────────────────
@@ -256,6 +280,7 @@ class NMSBot(commands.Bot):
         self._worker_task: Optional[asyncio.Task] = None
         self._active_command_tasks: set[asyncio.Task] = set()
         self._lockout_command: Optional[str] = None
+        self._selfie_session: Optional[SelfieSession] = None
 
         self._tokens = None
         self._access_token = "dev"
@@ -266,6 +291,7 @@ class NMSBot(commands.Bot):
 
         self._bsky = None
         self._bluesky_post_task: Optional[asyncio.Task] = None
+        self._bsky_post_lock = asyncio.Lock()
 
         self._teleport_interval_s = 4 * 3600  # 4 hours
         self._next_teleport_time: float = time.time() + self._teleport_interval_s
@@ -398,6 +424,12 @@ class NMSBot(commands.Bot):
                 await self._say(ctx, "Planet loading; please wait.")
                 return
 
+        # Confirmation is the one command allowed through the selfie lock. It
+        # still validates the sender and the current selfie phase below.
+        if name == "selfie_confirm":
+            await self._confirm_selfie(ctx)
+            return
+
         if self._lockout_command:
             await self._say(ctx, f"!{self._lockout_command} is running; please wait.")
             return
@@ -483,6 +515,173 @@ class NMSBot(commands.Bot):
         task = asyncio.create_task(self._run_command(name, args, movement_generation))
         self._active_command_tasks.add(task)
         task.add_done_callback(self._active_command_tasks.discard)
+
+    async def _start_selfie(self, ctx, args: list[str], requested_by):
+        if args:
+            await self._say(ctx, "Use !selfie without options.")
+            return
+
+        state = NMSState.get()
+        if not is_command_allowed("selfie", state):
+            command_state = get_command_state(fallback_state=state)
+            await self._say(ctx, f"!selfie is not available in the {command_state} state.")
+            return
+
+        if is_planet_loading():
+            await self._say(ctx, "Planet loading; please wait before sending commands.")
+            return
+
+        requested_by = (requested_by or "").strip().lower()
+        if not requested_by:
+            log("Selfie ignored: could not determine the requesting viewer.")
+            return
+        upload_available = get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
+        if upload_available and has_daily_selfie_upload(requested_by):
+            log(f"Selfie ignored: @{requested_by} already uploaded one today.")
+            await self._say(ctx, f"@{requested_by}, you can only upload one selfie per day.")
+            return
+
+        session = SelfieSession(
+            requested_by=requested_by,
+            confirm_event=asyncio.Event(),
+            upload_available=upload_available,
+        )
+        self._selfie_session = session
+        self._lockout_command = "selfie"
+
+        task = asyncio.create_task(self._run_selfie(ctx, session))
+        self._active_command_tasks.add(task)
+        task.add_done_callback(self._active_command_tasks.discard)
+
+    async def _confirm_selfie(self, ctx):
+        session = self._selfie_session
+        if session is None or session.phase != "awaiting_confirmation":
+            await self._say(ctx, "There is no selfie waiting for confirmation.")
+            return
+
+        username = (getattr(getattr(ctx, "author", None), "name", "") or "").strip().lower()
+        if username != session.requested_by:
+            await self._say(ctx, f"Only @{session.requested_by} can confirm this selfie.")
+            return
+
+        if session.confirm_event.is_set():
+            await self._say(ctx, "That selfie has already been confirmed.")
+            return
+
+        session.confirm_event.set()
+
+    async def _capture_selfie_file(self):
+        screenshot_dir = await asyncio.to_thread(find_nms_screenshot_dir)
+        before = await asyncio.to_thread(snapshot_screenshots, screenshot_dir)
+        captured_after_ns = time.time_ns()
+        await asyncio.to_thread(left_click)
+        await asyncio.sleep(0.5)
+        return await asyncio.to_thread(
+            wait_for_new_screenshot,
+            screenshot_dir,
+            before,
+            SelfieConfig.SCREENSHOT_WAIT_SECONDS,
+            captured_after_ns,
+        )
+
+    async def _perform_selfie(self, ctx, session: SelfieSession):
+        try:
+            log(f"Selfie: starting for @{session.requested_by}.")
+            session.phase = "starting_gesture"
+            await asyncio.to_thread(start_selfie_gesture)
+            session.gesture_started = True
+            await asyncio.sleep(SelfieConfig.GESTURE_DELAY_SECONDS)
+
+            session.phase = "entering_photo_mode"
+            await asyncio.to_thread(enter_photo_mode)
+            session.photo_mode_entered = True
+            await asyncio.sleep(SelfieConfig.PHOTO_MODE_SETTLE_SECONDS)
+
+            session.phase = "positioning_camera"
+            await asyncio.to_thread(position_selfie_camera)
+
+            if not session.upload_available:
+                session.phase = "limit_preview"
+                await asyncio.sleep(SelfieConfig.LIMIT_POSE_HOLD_SECONDS)
+                return "limit_preview", None
+
+            session.phase = "awaiting_confirmation"
+            await self._say(
+                ctx,
+                f"@{session.requested_by}, selfie ready! Use !selfie_confirm within "
+                f"{SelfieConfig.CONFIRM_SECONDS} seconds.",
+            )
+            try:
+                await asyncio.wait_for(session.confirm_event.wait(), timeout=SelfieConfig.CONFIRM_SECONDS)
+            except asyncio.TimeoutError:
+                return "timeout", None
+
+            session.phase = "capturing"
+            return "captured", await self._capture_selfie_file()
+        except Exception as e:
+            log(f"Selfie failed for @{session.requested_by}: {e}")
+            return "failed", None
+        finally:
+            session.phase = "cleaning_up"
+            if session.photo_mode_entered:
+                try:
+                    await asyncio.to_thread(exit_photo_mode)
+                except Exception as e:
+                    log(f"Selfie cleanup failed while exiting photo mode: {e}")
+            if session.gesture_started:
+                try:
+                    await asyncio.to_thread(end_selfie_gesture)
+                except Exception as e:
+                    log(f"Selfie cleanup failed while ending the gesture: {e}")
+
+    async def _upload_selfie(self, session: SelfieSession, screenshot_path):
+        try:
+            if not screenshot_path:
+                raise FileNotFoundError("Steam screenshot was not found after capture")
+            session.phase = "uploading"
+            caption = f"Greetings from Twitch viewer @{session.requested_by}!"
+            async with self._bsky_post_lock:
+                if self._bsky is None:
+                    self._bsky = await asyncio.to_thread(nms_bluesky.login)
+                    log("Bluesky logged in for selfie upload.")
+                post_url = await asyncio.to_thread(
+                    nms_bluesky.post_selfie,
+                    self._bsky,
+                    screenshot_path,
+                    caption,
+                )
+            await asyncio.to_thread(record_daily_selfie_upload, session.requested_by)
+            return "uploaded", post_url
+        except Exception as e:
+            log(f"Selfie upload failed for @{session.requested_by}: {e}")
+            return "upload_failed", None
+        finally:
+            deleted = await asyncio.to_thread(delete_screenshot, screenshot_path)
+            if not deleted:
+                log(f"Selfie cleanup could not delete screenshot: {screenshot_path}")
+
+    async def _run_selfie(self, ctx, session: SelfieSession):
+        outcome = "cancelled"
+        post_url = None
+        try:
+            outcome, screenshot_path = await self._perform_selfie(ctx, session)
+            if outcome == "captured":
+                outcome, post_url = await self._upload_selfie(session, screenshot_path)
+        finally:
+            session.phase = "complete"
+            if self._selfie_session is session:
+                self._selfie_session = None
+            if self._lockout_command == "selfie":
+                self._lockout_command = None
+            log(f"Selfie: {outcome} for @{session.requested_by}.")
+
+        if outcome == "uploaded":
+            link = f" {post_url}" if post_url else ""
+            await self._say(ctx, f"@{session.requested_by}'s selfie was posted to Bluesky!{link}")
+        elif outcome == "upload_failed":
+            await self._say(ctx, f"@{session.requested_by}, the selfie upload failed.")
+        elif outcome == "timeout":
+            await self._say(ctx, f"@{session.requested_by}, !selfie_confirm timed out.")
 
     async def _command_worker(self):
         while True:
@@ -758,10 +957,18 @@ class NMSBot(commands.Bot):
             try:
                 post_index = Config.BLUESKY_POST_TIMES.index(next_post.strftime("%H:%M"))
                 status_text = get_location_text() if post_index == 0 else get_info_text(countdown=self._format_countdown())
-                await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, status_text=status_text)
+                async with self._bsky_post_lock:
+                    await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, status_text=status_text)
                 log("Bluesky scheduler: post_clip() complete.")
             except Exception as e:
                 log(f"Bluesky scheduler failed: {e}")
+
+    @staticmethod
+    def _vote_help_text(name: str) -> str:
+        if name == "selfie" and get_daily_selfie_uploads() >= SelfieConfig.DAILY_UPLOAD_LIMIT:
+            return "Set up a selfie for the requesting viewer."
+        cmd = COMMANDS.get(name)
+        return cmd.help if cmd and cmd.help else ""
 
     async def _start_vote(self, ctx: commands.Context, name: str, args: list[str], starter=None):
         is_teleport = name == "teleport"
@@ -785,8 +992,7 @@ class NMSBot(commands.Bot):
         if starter:
             vote.votes[starter] = "yes"
 
-        cmd = COMMANDS.get(name)
-        help_text = f"{cmd.help}" if cmd and cmd.help else ""
+        help_text = self._vote_help_text(name)
 
         if is_teleport:
             address, galaxy = _normalize_teleport_destination(args)
@@ -828,8 +1034,7 @@ class NMSBot(commands.Bot):
                 no = sum(1 for value in vote.votes.values() if value == "no")
                 passed = yes > no
 
-                cmd = COMMANDS.get(name)
-                help_text = f"{cmd.help}" if cmd and cmd.help else ""
+                help_text = self._vote_help_text(name)
 
                 if passed:
                     if is_teleport and not is_command_allowed(name):
@@ -840,7 +1045,10 @@ class NMSBot(commands.Bot):
                     await self._say(ctx, f"Vote passed! ({yes}-{no}) • {passed_text}")
                     if is_teleport:
                         await self._say(ctx, "Teleporting to new planet...")
-                    await self._submit_command(name, args)
+                    if name == "selfie":
+                        await self._start_selfie(ctx, args, requested_by=starter)
+                    else:
+                        await self._submit_command(name, args)
                     feedback = Config.COMMAND_FEEDBACK.get(name)
                     if feedback:
                         await self._say(ctx, feedback)
@@ -1095,6 +1303,16 @@ class NMSBot(commands.Bot):
         if is_planet_loading():
             await self._say(ctx, "Planet loading; please wait before sending commands.")
             return
+
+        if name == "selfie":
+            username = (getattr(getattr(ctx, "author", None), "name", "") or "").strip().lower()
+            if (
+                get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
+                and has_daily_selfie_upload(username)
+            ):
+                log(f"Selfie vote ignored: @{username} already uploaded one today.")
+                await self._say(ctx, f"@{username}, you can only upload one selfie per day.")
+                return
 
         if name in Config.VOTABLE_COMMANDS:
             await self._start_vote(ctx, name, args)

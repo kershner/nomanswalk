@@ -1,9 +1,11 @@
 from utils import focus_nms, send_key, log
 from command_block_lists import blocked_commands_for_state, resolve_command_state
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 import threading
 import keyboard
+import pytz
 import win32api
 import win32con
 import ctypes
@@ -23,6 +25,27 @@ SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
 MOUSE_STEP = 10
 MOUSE_DELAY = 0.05
+
+
+class SelfieConfig:
+    """Editable timing values for the selfie sequence."""
+
+    GESTURE_HOTKEY = "7"             # Gesture quickslot
+    GESTURE_DELAY_SECONDS = 1         # Wait before photo mode
+    PHOTO_MODE_SETTLE_SECONDS = 1     # Wait for photo mode
+
+    # Camera inputs run in this order. Set a value to 0 to skip that step.
+    CAMERA_MOUSE_LEFT_STEPS = 1       # Initial left turn
+    CAMERA_FORWARD_SECONDS = 0.98     # Move camera forward
+    CAMERA_MOUSE_RIGHT_STEPS = 37.5   # Turn toward player
+    CAMERA_RAISE_SECONDS = 0.07       # Raise camera
+    CAMERA_TILT_SECONDS = 0.2         # Tilt camera
+    CAMERA_MOUSE_DOWN_STEPS = 1.6     # Aim camera down
+
+    CONFIRM_SECONDS = 20              # Confirmation window
+    DAILY_UPLOAD_LIMIT = 3            # Successful posts per day
+    LIMIT_POSE_HOLD_SECONDS = 10      # Pose time after limit
+    SCREENSHOT_WAIT_SECONDS = 15      # Steam file timeout
 
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
@@ -58,7 +81,7 @@ _daily_last_state = None
 
 
 def _today():
-    return time.strftime("%Y-%m-%d")
+    return datetime.now(pytz.timezone("US/Eastern")).date().isoformat()
 
 
 def _new_daily_stats():
@@ -68,6 +91,8 @@ def _new_daily_stats():
         "planets": [],
         "walkers": [],
         "commands": 0,
+        "selfie_uploads": 0,
+        "selfie_viewers": [],
     }
 
 
@@ -178,6 +203,43 @@ def record_daily_command(username):
         if username not in _daily_stats["walkers"]:
             _daily_stats["walkers"].append(username)
         _save_daily_stats()
+
+
+def _nonnegative_int(value):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def get_daily_selfie_uploads():
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        return _nonnegative_int(_daily_stats.get("selfie_uploads", 0))
+
+
+def has_daily_selfie_upload(username):
+    username = (username or "").strip().lower()
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        viewers = _daily_stats.get("selfie_viewers", [])
+        return isinstance(viewers, list) and username in viewers
+
+
+def record_daily_selfie_upload(username):
+    """Record one successful selfie per viewer and return today's count."""
+    username = (username or "").strip().lower()
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        viewers = _daily_stats.get("selfie_viewers")
+        if not isinstance(viewers, list):
+            viewers = _daily_stats["selfie_viewers"] = []
+        if not username or username in viewers:
+            return _nonnegative_int(_daily_stats.get("selfie_uploads", 0))
+        viewers.append(username)
+        _daily_stats["selfie_uploads"] = _nonnegative_int(_daily_stats.get("selfie_uploads", 0)) + 1
+        _save_daily_stats()
+        return _daily_stats["selfie_uploads"]
 
 
 def get_daily_stats():
@@ -605,16 +667,25 @@ def back(args=None, movement_generation=None):
     _hold_movement_key("s", n * SECONDS_PER_STEP, movement_generation)
 
 
-def _move_mouse_steps(dx: int, dy: int, args, movement_generation):
-    n = _clamp(args[0] if args else 1)
-    if _movement_cancelled(movement_generation):
+def _move_mouse_count(dx: int, dy: int, count, cancelled=lambda: False):
+    count = max(0, int(count))
+    if not count or cancelled():
         return
     focus_nms()
-    for _ in range(n):
-        if _movement_cancelled(movement_generation):
+    for _ in range(count):
+        if cancelled():
             return
         move_mouse(dx, dy)
         time.sleep(MOUSE_DELAY)
+
+
+def _move_mouse_steps(dx: int, dy: int, args, movement_generation):
+    _move_mouse_count(
+        dx,
+        dy,
+        _clamp(args[0] if args else 1),
+        lambda: _movement_cancelled(movement_generation),
+    )
 
 
 def up(args=None, movement_generation=None):
@@ -697,6 +768,41 @@ def coords(args=None):
 
     if was_walking:
         walk()  # right_mouse_click() stops autowalk in-game, so re-engage it
+
+
+def start_selfie_gesture(args=None):
+    """Stop movement and start the gesture used by the selfie sequence."""
+    stop()
+    send_key(SelfieConfig.GESTURE_HOTKEY, 0.1)
+
+
+def enter_photo_mode(args=None):
+    """Enter photo mode through the same quickslot used by !coords."""
+    focus_nms()
+    send_key("2", 0.1)
+
+
+def exit_photo_mode(args=None):
+    """Exit photo mode with the configured in-game right-click binding."""
+    right_mouse_click()
+
+
+def position_selfie_camera():
+    """Run the adjustable six-step selfie camera positioning sequence."""
+    _move_mouse_count(-MOUSE_STEP, 0, SelfieConfig.CAMERA_MOUSE_LEFT_STEPS)
+    if SelfieConfig.CAMERA_FORWARD_SECONDS > 0:
+        send_key("w", SelfieConfig.CAMERA_FORWARD_SECONDS)
+    _move_mouse_count(MOUSE_STEP, 0, SelfieConfig.CAMERA_MOUSE_RIGHT_STEPS)
+    if SelfieConfig.CAMERA_RAISE_SECONDS > 0:
+        send_key("e", SelfieConfig.CAMERA_RAISE_SECONDS)
+    if SelfieConfig.CAMERA_TILT_SECONDS > 0:
+        send_key("3", SelfieConfig.CAMERA_TILT_SECONDS)
+    _move_mouse_count(0, MOUSE_STEP, SelfieConfig.CAMERA_MOUSE_DOWN_STEPS)
+
+
+def end_selfie_gesture(args=None):
+    """Tap movement after leaving photo mode so the selfie gesture ends."""
+    send_key("w", 0.1)
 
 
 def ship(args=None):
@@ -878,6 +984,7 @@ COMMANDS: dict[str, Command] = {
     "left_click": Command(left_click_cmd, "Click or hold left mouse for up to 10 seconds. e.g. !lc 5", aliases=("lc",)),
     "right_click": Command(right_click_cmd, "Click or hold right mouse for up to 10 seconds. e.g. !rc 5", aliases=("rc",)),
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
+    "selfie":  Command(start_selfie_gesture, "Set up a selfie and wait for the requesting viewer to use !selfie_confirm."),
     "teleport": Command(teleport, "!teleport [address=HEX] [galaxy=NUMBER] | No options selects a random planet in a random galaxy. galaxy=NUMBER selects a random planet in that galaxy. address=HEX selects that location in the current galaxy. Use both to select a specific location in a specific galaxy."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "ship": Command(ship, "Select the Walker's ship placement quickslot."),

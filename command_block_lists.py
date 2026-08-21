@@ -53,6 +53,7 @@ IN_COCKPIT_BLOCKED_COMMANDS = [
     "pet",
     "dance",
     "sit",
+    "selfie",
 ]
 
 # Add commands here to block them in every planetary environment.
