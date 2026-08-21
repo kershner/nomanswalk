@@ -2,9 +2,9 @@ from nms_bot import (
     COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig,
     _normalize_teleport_destination, cancel_movement, end_selfie_gesture,
     enter_photo_mode, exit_photo_mode, get_canonical_command_name,
-    get_command_state, get_daily_selfie_uploads, get_movement_generation,
+    get_command_state, get_current_planet_key, get_daily_selfie_uploads, get_movement_generation,
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
-    is_planet_loading, left_click,
+    has_selfie_planet_upload, is_planet_loading, left_click,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
     release_selfie_camera,
     start_selfie_gesture, start_state_poller,
@@ -257,10 +257,48 @@ class VoteState:
 class SelfieSession:
     requested_by: str
     confirm_event: asyncio.Event
+    planet_key: str = ""
+    location_data: dict = None
     phase: str = "starting"
     gesture_started: bool = False
     photo_mode_entered: bool = False
     upload_available: bool = True
+
+
+def _build_selfie_caption(viewer, state):
+    planet = state.get("planet") or {}
+    address = state.get("universe_address") or {}
+    galaxy_number = address.get("galaxy_number")
+    if not isinstance(galaxy_number, int):
+        reality_index = address.get("reality_index")
+        galaxy_number = reality_index + 1 if isinstance(reality_index, int) else None
+    galaxy = get_galaxy_name(galaxy_number) if galaxy_number else ""
+
+    planet_name = planet.get("name") or "an unknown world"
+    lines = [
+        f"Greetings from {planet_name}!",
+        f"Selfie requested live by Twitch viewer @{viewer}.",
+    ]
+
+    details = []
+    if galaxy:
+        details.append(f"Galaxy: {galaxy}")
+    for label, key in (
+        ("Biome", "biome"),
+        ("Size", "planet_size"),
+        ("Weather", "weather_type"),
+    ):
+        if planet.get(key):
+            details.append(f"{label}: {planet[key]}")
+    if details:
+        lines.append(" • ".join(details))
+
+    suffix = f"\nWatch the journey live: https://www.twitch.tv/{Config.TWITCH_CHANNEL}"
+    body = "\n".join(lines)
+    available = nms_bluesky.BLUESKY_MAX_TEXT - len(suffix)
+    if len(body) > available:
+        body = body[:max(0, available - 1)].rstrip() + "…"
+    return body + suffix
 
 
 # ─────────────────────────────────────────────────────────────
@@ -536,15 +574,19 @@ class NMSBot(commands.Bot):
         if not requested_by:
             log("Selfie ignored: could not determine the requesting viewer.")
             return
-        upload_available = get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
-        if upload_available and has_daily_selfie_upload(requested_by):
-            log(f"Selfie ignored: @{requested_by} already uploaded one today.")
-            await self._say(ctx, f"@{requested_by}, you can only upload one selfie per day.")
-            return
+
+        planet_key = get_current_planet_key()
+        upload_available = (
+            get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
+            and not has_daily_selfie_upload(requested_by)
+            and not has_selfie_planet_upload(planet_key)
+        )
 
         session = SelfieSession(
             requested_by=requested_by,
             confirm_event=asyncio.Event(),
+            planet_key=planet_key or "",
+            location_data=NMSState.get_data(),
             upload_available=upload_available,
         )
         self._selfie_session = session
@@ -644,7 +686,7 @@ class NMSBot(commands.Bot):
             if not screenshot_path:
                 raise FileNotFoundError("Steam screenshot was not found after capture")
             session.phase = "uploading"
-            caption = f"Greetings from Twitch viewer @{session.requested_by}!"
+            caption = _build_selfie_caption(session.requested_by, session.location_data or {})
             async with self._bsky_post_lock:
                 if self._bsky is None:
                     self._bsky = await asyncio.to_thread(nms_bluesky.login)
@@ -655,7 +697,11 @@ class NMSBot(commands.Bot):
                     screenshot_path,
                     caption,
                 )
-            await asyncio.to_thread(record_daily_selfie_upload, session.requested_by)
+            await asyncio.to_thread(
+                record_daily_selfie_upload,
+                session.requested_by,
+                session.planet_key,
+            )
             return "uploaded", post_url
         except Exception as e:
             log(f"Selfie upload failed for @{session.requested_by}: {e}")
@@ -970,7 +1016,7 @@ class NMSBot(commands.Bot):
 
     @staticmethod
     def _vote_help_text(name: str) -> str:
-        if name == "selfie" and get_daily_selfie_uploads() >= SelfieConfig.DAILY_UPLOAD_LIMIT:
+        if name == "selfie":
             return "Set up a selfie for the requesting viewer."
         cmd = COMMANDS.get(name)
         return cmd.help if cmd and cmd.help else ""
@@ -1308,16 +1354,6 @@ class NMSBot(commands.Bot):
         if is_planet_loading():
             await self._say(ctx, "Planet loading; please wait before sending commands.")
             return
-
-        if name == "selfie":
-            username = (getattr(getattr(ctx, "author", None), "name", "") or "").strip().lower()
-            if (
-                get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
-                and has_daily_selfie_upload(username)
-            ):
-                log(f"Selfie vote ignored: @{username} already uploaded one today.")
-                await self._say(ctx, f"@{username}, you can only upload one selfie per day.")
-                return
 
         if name in Config.VOTABLE_COMMANDS:
             await self._start_vote(ctx, name, args)

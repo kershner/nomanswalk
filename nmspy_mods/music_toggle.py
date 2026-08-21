@@ -17,12 +17,11 @@
 
 import ctypes
 import logging
-import os
-from datetime import datetime
 
 from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed, static_function_hook, Structure
 from pymhf.gui.decorators import BOOLEAN
+from shared_state import _make_logger
 
 # MASTER_MUSIC_LEVEL is NMS's own RTPC for the music volume bus —
 # the same value the in-game audio slider writes to.
@@ -51,20 +50,7 @@ class _AKExtra(Structure):
         pass
 
 
-_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "musicToggle.log")
-
-def _build_file_logger() -> logging.Logger:
-    flog = logging.getLogger("MusicToggle.file")
-    flog.setLevel(logging.DEBUG)
-    flog.propagate = False
-    if not flog.handlers:
-        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="a")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
-        flog.addHandler(fh)
-    return flog
-
-_flog = _build_file_logger()
-# _flog.info(f"=== musicToggle loaded  {datetime.now().isoformat()} ===")
+_flog = _make_logger("MusicToggle.file", "musicToggle.log")
 
 logger = logging.getLogger("MusicToggle")
 

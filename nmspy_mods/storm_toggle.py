@@ -1,5 +1,4 @@
 import logging
-import os
 import traceback
 
 from pymhf import Mod
@@ -7,26 +6,10 @@ from pymhf.core.hooking import on_key_pressed
 from nmspy.globals import globals
 
 import nmspy.data.types as nms
-from shared_state import set_mod_status
+from shared_state import _make_logger, set_mod_status
 
 
-_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "storm_toggle.log")
-
-
-def _build_file_logger() -> logging.Logger:
-    log = logging.getLogger("StormToggle.file")
-    log.setLevel(logging.DEBUG)
-    log.propagate = False
-
-    if not log.handlers:
-        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="a")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
-        log.addHandler(fh)
-
-    return log
-
-
-_flog = _build_file_logger()
+_flog = _make_logger("StormToggle.file", "storm_toggle.log")
 logger = logging.getLogger("StormToggle")
 
 _flog.info("=== storm_toggle.py loaded ===")

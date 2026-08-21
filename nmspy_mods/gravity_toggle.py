@@ -1,6 +1,5 @@
 import ctypes
 import logging
-import os
 import traceback
 from dataclasses import dataclass, field
 
@@ -8,30 +7,13 @@ from pymhf import Mod, ModState
 from pymhf.core.hooking import on_key_pressed
 
 import nmspy.data.types as nms
-from shared_state import set_mod_status
-
-
-_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gravity_toggle.log")
+from shared_state import _make_logger, set_mod_status
 
 
 LOW_GRAVITY_MULTIPLIER = 0.2
 NORMAL_GRAVITY_MULTIPLIER = 1.0
 
-
-def _build_file_logger() -> logging.Logger:
-    log = logging.getLogger("GravityToggle.file")
-    log.setLevel(logging.DEBUG)
-    log.propagate = False
-
-    if not log.handlers:
-        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="a")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
-        log.addHandler(fh)
-
-    return log
-
-
-_flog = _build_file_logger()
+_flog = _make_logger("GravityToggle.file", "gravity_toggle.log")
 logger = logging.getLogger("GravityToggle")
 
 _flog.info("=== gravity_toggle.py loaded ===")

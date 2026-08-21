@@ -70,6 +70,7 @@ _movement_generation = 0
 _movement_generation_lock = threading.Lock()
 
 _daily_stats_lock = threading.Lock()
+_runtime_state_lock = threading.Lock()
 _daily_stats = {}
 _daily_last_position = None
 _daily_last_planet = None
@@ -89,6 +90,7 @@ def _new_daily_stats():
         "commands": 0,
         "selfie_uploads": 0,
         "selfie_viewers": [],
+        "selfie_planets": [],
     }
 
 
@@ -112,9 +114,10 @@ def _write_runtime_state(state):
 
 
 def _update_runtime_section(section, value):
-    state = _read_runtime_state()
-    state[section] = value
-    _write_runtime_state(state)
+    with _runtime_state_lock:
+        state = _read_runtime_state()
+        state[section] = value
+        _write_runtime_state(state)
 
 
 def _save_daily_stats():
@@ -222,17 +225,31 @@ def has_daily_selfie_upload(username):
         return isinstance(viewers, list) and username in viewers
 
 
-def record_daily_selfie_upload(username):
-    """Record one successful selfie per viewer and return today's count."""
+def has_selfie_planet_upload(planet_key):
+    if not planet_key:
+        return False
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        planets = _daily_stats.get("selfie_planets", [])
+        return isinstance(planets, list) and planet_key in planets
+
+
+def record_daily_selfie_upload(username, planet_key=None):
+    """Record a successful daily viewer and planet upload."""
     username = (username or "").strip().lower()
     with _daily_stats_lock:
         _ensure_daily_stats()
         viewers = _daily_stats.get("selfie_viewers")
         if not isinstance(viewers, list):
             viewers = _daily_stats["selfie_viewers"] = []
-        if not username or username in viewers:
+        planets = _daily_stats.get("selfie_planets")
+        if not isinstance(planets, list):
+            planets = _daily_stats["selfie_planets"] = []
+        if not username or username in viewers or (planet_key and planet_key in planets):
             return _nonnegative_int(_daily_stats.get("selfie_uploads", 0))
         viewers.append(username)
+        if planet_key:
+            planets.append(planet_key)
         _daily_stats["selfie_uploads"] = _nonnegative_int(_daily_stats.get("selfie_uploads", 0)) + 1
         _save_daily_stats()
         return _daily_stats["selfie_uploads"]
@@ -252,9 +269,6 @@ def get_daily_stats():
 _load_daily_stats()
 
 # Shared runtime game state — visible to launcher, dev server, and bot.
-_runtime_state_lock = threading.Lock()
-
-
 def set_runtime_game_state(**values):
     with _runtime_state_lock:
         state = _read_runtime_state()
@@ -315,6 +329,10 @@ class NMSState:
     def get_data(cls) -> dict:
         with cls._lock:
             return dict(cls._data)
+
+
+def get_current_planet_key():
+    return _planet_key(NMSState.get_data())
 
 
 def get_command_state(data: dict | None = None, fallback_state: str | None = None) -> str:

@@ -5,6 +5,7 @@ import win32con
 import pywinauto
 import keyboard
 import logging
+from logging.handlers import RotatingFileHandler
 import ctypes
 import time
 import json
@@ -18,7 +19,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_path, mode="a", encoding="utf-8"),
+        RotatingFileHandler(
+            log_path,
+            maxBytes=2 * 1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        ),
         logging.StreamHandler(),
     ],
 )

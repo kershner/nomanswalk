@@ -13,7 +13,6 @@
 # ///
 
 import logging
-import os
 import traceback
 
 from pymhf import Mod
@@ -21,7 +20,7 @@ from pymhf.core.hooking import on_key_pressed
 from nmspy.globals import globals
 
 import nmspy.data.types as nms
-from shared_state import set_mod_status
+from shared_state import _make_logger, set_mod_status
 
 
 DAY_KEY = "f6"
@@ -36,23 +35,7 @@ NIGHT_TIME = 0.0
 # -1.0 releases the debug override and resumes the game's actual planet time.
 NORMAL_TIME = -1.0
 
-_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_of_day.log")
-
-
-def _build_file_logger() -> logging.Logger:
-    log = logging.getLogger("TimeOfDay.file")
-    log.setLevel(logging.DEBUG)
-    log.propagate = False
-
-    if not log.handlers:
-        fh = logging.FileHandler(_LOG_PATH, encoding="utf-8", mode="a")
-        fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S"))
-        log.addHandler(fh)
-
-    return log
-
-
-_flog = _build_file_logger()
+_flog = _make_logger("TimeOfDay.file", "time_of_day.log")
 logger = logging.getLogger("TimeOfDay")
 
 _flog.info("=== time_of_day.py loaded ===")

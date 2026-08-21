@@ -17,6 +17,7 @@ import requests
 import httpx
 import logging
 import random
+import re
 import time
 import json
 import os
@@ -239,6 +240,38 @@ def _prepare_image(image_path: str):
             image = image.resize((width, height), Image.Resampling.LANCZOS)
 
 
+def _link_facets(text: str):
+    facets = []
+    for match in re.finditer(r"https?://[^\s]+", text):
+        facets.append({
+            "index": {
+                "byteStart": len(text[:match.start()].encode("utf-8")),
+                "byteEnd": len(text[:match.end()].encode("utf-8")),
+            },
+            "features": [{
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": match.group(0),
+            }],
+        })
+    for match in re.finditer(r"(?<=Twitch viewer )@([A-Za-z0-9_]{1,25})", text):
+        facets.append({
+            "index": {
+                "byteStart": len(text[:match.start()].encode("utf-8")),
+                "byteEnd": len(text[:match.end()].encode("utf-8")),
+            },
+            "features": [{
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": f"https://www.twitch.tv/{match.group(1)}",
+            }],
+        })
+    return sorted(facets, key=lambda facet: facet["index"]["byteStart"])
+
+
+def _profile_url(bsky_client: Client):
+    actor = getattr(bsky_client.me, "handle", None) or bsky_client.me.did
+    return f"https://bsky.app/profile/{actor}"
+
+
 def post_selfie(bsky_client: Client, image_path: str, caption: str):
     """Upload a local screenshot as a Bluesky image post."""
     if bsky_client is None:
@@ -253,6 +286,7 @@ def post_selfie(bsky_client: Client, image_path: str, caption: str):
     record = {
         "text": text,
         "createdAt": bsky_client.get_current_time_iso(),
+        "facets": _link_facets(text),
         "embed": {
             "$type": "app.bsky.embed.images",
             "images": [{
@@ -272,9 +306,8 @@ def post_selfie(bsky_client: Client, image_path: str, caption: str):
         uri = result.get("uri")
     if uri and "/app.bsky.feed.post/" in uri:
         rkey = uri.rsplit("/", 1)[-1]
-        actor = getattr(bsky_client.me, "handle", None) or bsky_client.me.did
-        return f"https://bsky.app/profile/{actor}/post/{rkey}"
-    return None
+        return f"{_profile_url(bsky_client)}/post/{rkey}"
+    return _profile_url(bsky_client)
 
 
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = "", status_text: str = ""):

@@ -1,5 +1,6 @@
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import time
 from dataclasses import dataclass
@@ -50,7 +51,12 @@ def _make_logger(name, filename):
     log = logging.getLogger(name)
     log.setLevel(logging.DEBUG)
     if not any(isinstance(h, logging.FileHandler) for h in log.handlers):
-        fh = logging.FileHandler(os.path.join(_base_dir, filename), mode="a", encoding="utf-8")
+        fh = RotatingFileHandler(
+            os.path.join(_base_dir, filename),
+            maxBytes=2 * 1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         log.addHandler(fh)
         log.propagate = False
