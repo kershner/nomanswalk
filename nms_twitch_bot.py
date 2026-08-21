@@ -6,7 +6,7 @@ from nms_bot import (
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
     has_selfie_planet_upload, is_planet_loading, left_click,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
-    release_selfie_camera,
+    release_selfie_camera, set_runtime_game_state,
     start_selfie_gesture, start_state_poller,
 )
 from galaxy_names import get_galaxy_name
@@ -81,6 +81,7 @@ class Config:
 
     ADMIN_ONLY_COMMANDS = {
         "next_planet",
+        "selfie_lock",
     }
 
     VOTABLE_COMMANDS = {
@@ -263,6 +264,7 @@ class SelfieSession:
     gesture_started: bool = False
     photo_mode_entered: bool = False
     upload_available: bool = True
+    limits_enabled: bool = True
 
 
 def _build_selfie_caption(viewer, state):
@@ -320,6 +322,9 @@ class NMSBot(commands.Bot):
         self._active_command_tasks: set[asyncio.Task] = set()
         self._lockout_command: Optional[str] = None
         self._selfie_session: Optional[SelfieSession] = None
+        self._selfie_limits_enabled = bool(
+            get_runtime_game_state().get("selfie_limits_enabled", True)
+        )
 
         self._tokens = None
         self._access_token = "dev"
@@ -475,7 +480,7 @@ class NMSBot(commands.Bot):
 
         canonical_name = get_canonical_command_name(name)
 
-        if name in {"yes", "no", "help", "more", "info", "location", "loc"} or name in COMMANDS:
+        if name in {"yes", "no", "help", "more", "info", "location", "loc", "selfie_lock"} or name in COMMANDS:
             record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
 
         if name == "yes":
@@ -577,9 +582,12 @@ class NMSBot(commands.Bot):
 
         planet_key = get_current_planet_key()
         upload_available = (
-            get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
-            and not has_daily_selfie_upload(requested_by)
-            and not has_selfie_planet_upload(planet_key)
+            not self._selfie_limits_enabled
+            or (
+                get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
+                and not has_daily_selfie_upload(requested_by)
+                and not has_selfie_planet_upload(planet_key)
+            )
         )
 
         session = SelfieSession(
@@ -588,6 +596,7 @@ class NMSBot(commands.Bot):
             planet_key=planet_key or "",
             location_data=NMSState.get_data(),
             upload_available=upload_available,
+            limits_enabled=self._selfie_limits_enabled,
         )
         self._selfie_session = session
         self._lockout_command = "selfie"
@@ -697,11 +706,12 @@ class NMSBot(commands.Bot):
                     screenshot_path,
                     caption,
                 )
-            await asyncio.to_thread(
-                record_daily_selfie_upload,
-                session.requested_by,
-                session.planet_key,
-            )
+            if session.limits_enabled:
+                await asyncio.to_thread(
+                    record_daily_selfie_upload,
+                    session.requested_by,
+                    session.planet_key,
+                )
             return "uploaded", post_url
         except Exception as e:
             log(f"Selfie upload failed for @{session.requested_by}: {e}")
@@ -1287,6 +1297,7 @@ class NMSBot(commands.Bot):
                 "loc": "Alias for !location.",
                 "help": "Show command list page 1.",
                 "more": "Show command list page 2.",
+                "selfie_lock": "Admin: use !selfie_lock [on|off|status] to control selfie upload limits.",
             }
             if name in meta_help:
                 await self._say(ctx, f"!{name}: {meta_help[name]}")
@@ -1322,7 +1333,39 @@ class NMSBot(commands.Bot):
         if announce:
             await self._say(ctx, Config.COMMAND_FEEDBACK["walk"])
 
+    async def _set_selfie_lock(self, ctx, args):
+        if len(args) > 1 or (args and args[0].lower() not in {"on", "off", "status"}):
+            await self._say(ctx, "Use !selfie_lock [on|off|status].")
+            return
+
+        action = args[0].lower() if args else "toggle"
+        if action != "status":
+            self._selfie_limits_enabled = (
+                action == "on" if action in {"on", "off"}
+                else not self._selfie_limits_enabled
+            )
+            await asyncio.to_thread(
+                set_runtime_game_state,
+                selfie_limits_enabled=self._selfie_limits_enabled,
+            )
+
+        if self._selfie_limits_enabled:
+            await self._say(
+                ctx,
+                "Selfie upload lock is ON. Daily viewer, planet, and total limits are enforced.",
+            )
+        else:
+            await self._say(
+                ctx,
+                "Selfie upload lock is OFF. Upload limits are disabled and uploads will not count toward daily totals.",
+            )
+
     async def _dispatch_nms_command(self, ctx: commands.Context, name: str, args: list[str]):
+        if name == "selfie_lock":
+            if self._is_admin(ctx.author.name):
+                await self._set_selfie_lock(ctx, args)
+            return
+
         if name not in COMMANDS:
             return
 
