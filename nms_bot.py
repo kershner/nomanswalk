@@ -13,6 +13,7 @@ import json
 import time
 import math
 import os
+import uuid
 
 # ---------------------------------------------------------------------------
 # Config
@@ -20,6 +21,8 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "nmspy_mods", "nms_state.json")
 TELEPORT_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "teleport_request.json")
+SELFIE_CAMERA_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "selfie_camera_request.json")
+SELFIE_CAMERA_STATUS_FILE = os.path.join(BASE_DIR, "nmspy_mods", "selfie_camera_status.json")
 STATE_POLL_INTERVAL = 1  # seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
@@ -34,18 +37,11 @@ class SelfieConfig:
     GESTURE_DELAY_SECONDS = 1         # Wait before photo mode
     PHOTO_MODE_SETTLE_SECONDS = 1     # Wait for photo mode
 
-    # Camera inputs run in this order. Set a value to 0 to skip that step.
-    CAMERA_MOUSE_LEFT_STEPS = 1       # Initial left turn
-    CAMERA_FORWARD_SECONDS = 0.98     # Move camera forward
-    CAMERA_MOUSE_RIGHT_STEPS = 37.5   # Turn toward player
-    CAMERA_RAISE_SECONDS = 0.07       # Raise camera
-    CAMERA_TILT_SECONDS = 0.2         # Tilt camera
-    CAMERA_MOUSE_DOWN_STEPS = 1.6     # Aim camera down
-
     CONFIRM_SECONDS = 20              # Confirmation window
     DAILY_UPLOAD_LIMIT = 3            # Successful posts per day
     LIMIT_POSE_HOLD_SECONDS = 10      # Pose time after limit
     SCREENSHOT_WAIT_SECONDS = 15      # Steam file timeout
+    MOD_CAMERA_TIMEOUT_SECONDS = 5    # Wait for camera mod
 
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
@@ -787,17 +783,43 @@ def exit_photo_mode(args=None):
     right_mouse_click()
 
 
-def position_selfie_camera():
-    """Run the adjustable six-step selfie camera positioning sequence."""
-    _move_mouse_count(-MOUSE_STEP, 0, SelfieConfig.CAMERA_MOUSE_LEFT_STEPS)
-    if SelfieConfig.CAMERA_FORWARD_SECONDS > 0:
-        send_key("w", SelfieConfig.CAMERA_FORWARD_SECONDS)
-    _move_mouse_count(MOUSE_STEP, 0, SelfieConfig.CAMERA_MOUSE_RIGHT_STEPS)
-    if SelfieConfig.CAMERA_RAISE_SECONDS > 0:
-        send_key("e", SelfieConfig.CAMERA_RAISE_SECONDS)
-    if SelfieConfig.CAMERA_TILT_SECONDS > 0:
-        send_key("3", SelfieConfig.CAMERA_TILT_SECONDS)
-    _move_mouse_count(0, MOUSE_STEP, SelfieConfig.CAMERA_MOUSE_DOWN_STEPS)
+def release_selfie_camera():
+    try:
+        os.remove(SELFIE_CAMERA_REQUEST_FILE)
+    except OSError:
+        pass
+
+
+def position_selfie_camera(timeout_seconds):
+    """Request the permanent camera pose and wait until the mod applies it."""
+    release_selfie_camera()
+    request_id = uuid.uuid4().hex
+    deadline = time.monotonic() + float(timeout_seconds)
+    temp_file = f"{SELFIE_CAMERA_REQUEST_FILE}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as file:
+        json.dump(
+            {"request_id": request_id, "expires_at": time.time() + 60},
+            file,
+        )
+    os.replace(temp_file, SELFIE_CAMERA_REQUEST_FILE)
+
+    try:
+        while time.monotonic() < deadline:
+            try:
+                with open(SELFIE_CAMERA_STATUS_FILE, "r", encoding="utf-8") as file:
+                    status = json.load(file)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                status = {}
+            if status.get("request_id") == request_id:
+                if status.get("state") == "ready":
+                    return
+                if status.get("state") == "error":
+                    raise RuntimeError(status.get("message") or "selfie camera mod failed")
+            time.sleep(0.05)
+        raise TimeoutError("selfie camera mod did not become ready")
+    except Exception:
+        release_selfie_camera()
+        raise
 
 
 def end_selfie_gesture(args=None):

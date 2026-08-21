@@ -6,6 +6,7 @@ from nms_bot import (
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
     is_planet_loading, left_click,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
+    release_selfie_camera,
     start_selfie_gesture, start_state_poller,
 )
 from galaxy_names import get_galaxy_name
@@ -598,7 +599,10 @@ class NMSBot(commands.Bot):
             await asyncio.sleep(SelfieConfig.PHOTO_MODE_SETTLE_SECONDS)
 
             session.phase = "positioning_camera"
-            await asyncio.to_thread(position_selfie_camera)
+            await asyncio.to_thread(
+                position_selfie_camera,
+                SelfieConfig.MOD_CAMERA_TIMEOUT_SECONDS,
+            )
 
             if not session.upload_available:
                 session.phase = "limit_preview"
@@ -623,6 +627,7 @@ class NMSBot(commands.Bot):
             return "failed", None
         finally:
             session.phase = "cleaning_up"
+            await asyncio.to_thread(release_selfie_camera)
             if session.photo_mode_entered:
                 try:
                     await asyncio.to_thread(exit_photo_mode)
