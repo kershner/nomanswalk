@@ -44,6 +44,7 @@ class SelfieConfig:
     LIMIT_POSE_HOLD_SECONDS = 10      # Pose time after limit
     SCREENSHOT_WAIT_SECONDS = 15      # Steam file timeout
     MOD_CAMERA_TIMEOUT_SECONDS = 5    # Wait for camera mod
+    PRESERVE_CAPTURED_SCREENSHOT = True  # Temporary: retain the exact uploaded selfie for comparison
 
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
