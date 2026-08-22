@@ -856,6 +856,12 @@ def enter_photo_mode(args=None):
     send_key("2", 0.1)
 
 
+def capture_steam_screenshot():
+    """Capture the visible photo-mode framebuffer, including its glyph overlay."""
+    focus_nms()
+    send_key("f12", 0.1)
+
+
 def exit_photo_mode(args=None):
     """Exit photo mode with the configured in-game right-click binding."""
     right_mouse_click()

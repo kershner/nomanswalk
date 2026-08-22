@@ -1,6 +1,7 @@
 from nms_bot import (
     COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig,
-    _normalize_teleport_destination, cancel_movement, end_selfie_gesture,
+    _normalize_teleport_destination, cancel_movement, capture_steam_screenshot,
+    end_selfie_gesture,
     enter_photo_mode, exit_photo_mode, get_canonical_command_name,
     get_command_state, get_current_planet_key, get_daily_selfie_uploads, get_movement_generation,
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
@@ -697,7 +698,7 @@ class NMSBot(commands.Bot):
         screenshot_dir = await asyncio.to_thread(find_nms_screenshot_dir)
         before = await asyncio.to_thread(snapshot_screenshots, screenshot_dir)
         captured_after_ns = time.time_ns()
-        await asyncio.to_thread(left_click)
+        await asyncio.to_thread(capture_steam_screenshot)
         await asyncio.sleep(0.5)
         return await asyncio.to_thread(
             wait_for_new_screenshot,
