@@ -88,7 +88,7 @@ class Config:
         "camera",
         "coords",
         "music",
-        # "selfie",
+        "selfie",
         "teleport",
     }
 
