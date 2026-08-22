@@ -33,11 +33,13 @@ MOUSE_DELAY = 0.05
 class SelfieConfig:
     """Editable timing values for the selfie sequence."""
 
-    GESTURE_HOTKEY = "7"             # Gesture quickslot
-    GESTURE_DELAY_SECONDS = 3.75         # Wait before photo mode
-    PHOTO_MODE_SETTLE_SECONDS = 1     # Wait for photo mode
+    TURN_RIGHT_SECONDS = 1.0           # Turn the camera to the right
+    WALK_FORWARD_SECONDS = 1.0         # Walk forward after turning
+    GESTURE_HOLD_SECONDS = 4           # Let the gesture reach its pose
+    GESTURE_HOTKEY = "7"               # Gesture quickslot
+    PHOTO_MODE_SETTLE_SECONDS = 1      # Wait for photo mode
 
-    CONFIRM_SECONDS = 20              # Confirmation window
+    CONFIRM_SECONDS = 60              # Confirmation window
     DAILY_UPLOAD_LIMIT = 3            # Successful posts per day
     LIMIT_POSE_HOLD_SECONDS = 10      # Pose time after limit
     SCREENSHOT_WAIT_SECONDS = 15      # Steam file timeout
@@ -628,6 +630,23 @@ def stop(args=None):
         send_key("w", 0.1)
 
 
+def _stop_for_selfie():
+    """Stop tracked movement without the general stop command's W tap."""
+    global _autowalk_enabled, _cruise_enabled, _boost_enabled
+    with _autowalk_command_lock:
+        was_autowalking = _autowalk_enabled
+        _autowalk_enabled = False
+        _cruise_enabled = False
+        _boost_enabled = False
+        _reset_stuck()
+        cancel_movement()
+
+        # K is the configured autowalk toggle and stops it without moving the
+        # player. Held cruise/boost movement was already released above.
+        if was_autowalking:
+            send_key("k", 0.1)
+
+
 def _set_cruise(enabled: bool, movement_generation=None):
     global _autowalk_enabled, _cruise_enabled
     if enabled:
@@ -713,6 +732,25 @@ def _move_mouse_steps(dx: int, dy: int, args, movement_generation):
     )
 
 
+def _move_mouse_for_duration(dx: int, dy: int, duration: float) -> bool:
+    """Move the mouse repeatedly for an exact duration."""
+    duration = max(0.0, float(duration))
+    if duration == 0.0:
+        return True
+
+    hwnd, _ = focus_nms()
+    if not hwnd:
+        return False
+
+    end = time.monotonic() + duration
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return True
+        move_mouse(dx, dy)
+        time.sleep(min(MOUSE_DELAY, remaining))
+
+
 def up(args=None, movement_generation=None):
     """Move mouse up ARG steps"""
     _move_mouse_steps(0, -MOUSE_STEP, args, movement_generation)
@@ -796,8 +834,18 @@ def coords(args=None):
 
 
 def start_selfie_gesture(args=None):
-    """Stop movement and start the gesture used by the selfie sequence."""
-    stop()
+    """Prepare a predictable background-facing pose and start its gesture."""
+    _stop_for_selfie()
+
+    if not _move_mouse_for_duration(
+        MOUSE_STEP,
+        0,
+        SelfieConfig.TURN_RIGHT_SECONDS,
+    ):
+        raise RuntimeError("could not turn the camera to the right")
+
+    if not _hold_movement_key("w", SelfieConfig.WALK_FORWARD_SECONDS, None):
+        raise RuntimeError("could not walk the player forward")
     send_key(SelfieConfig.GESTURE_HOTKEY, 0.1)
 
 
@@ -819,15 +867,22 @@ def release_selfie_camera():
         pass
 
 
-def position_selfie_camera(timeout_seconds):
+def position_selfie_camera(timeout_seconds, profile="production"):
     """Request the permanent camera pose and wait until the mod applies it."""
     release_selfie_camera()
+    profile = str(profile).strip().lower()
+    if profile not in {"dev", "production"}:
+        raise ValueError(f"unknown selfie camera profile: {profile}")
     request_id = uuid.uuid4().hex
     deadline = time.monotonic() + float(timeout_seconds)
     temp_file = f"{SELFIE_CAMERA_REQUEST_FILE}.tmp"
     with open(temp_file, "w", encoding="utf-8") as file:
         json.dump(
-            {"request_id": request_id, "expires_at": time.time() + 60},
+            {
+                "request_id": request_id,
+                "expires_at": time.time() + 60,
+                "profile": profile,
+            },
             file,
         )
     os.replace(temp_file, SELFIE_CAMERA_REQUEST_FILE)
@@ -1035,7 +1090,7 @@ COMMANDS: dict[str, Command] = {
     "left_click": Command(left_click_cmd, "Click or hold left mouse for up to 10 seconds. e.g. !lc 5", aliases=("lc",)),
     "right_click": Command(right_click_cmd, "Click or hold right mouse for up to 10 seconds. e.g. !rc 5", aliases=("rc",)),
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
-    "selfie":  Command(start_selfie_gesture, "Set up a selfie and wait for the requesting viewer to use !selfie_confirm."),
+    "selfie":  Command(start_selfie_gesture, "Set up a selfie and wait for the requesting viewer to use !confirm."),
     "teleport": Command(teleport, "!teleport [address=HEX] [galaxy=NUMBER] | No options selects a random planet in a random galaxy. galaxy=NUMBER selects a random planet in that galaxy. address=HEX selects that location in the current galaxy. Use both to select a specific location in a specific galaxy."),
     "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
     "ship": Command(ship, "Select the Walker's ship placement quickslot."),

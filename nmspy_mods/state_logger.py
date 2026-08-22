@@ -44,7 +44,6 @@ _slog = _make_logger("StateDetector", "nms_state_logger.log")
 
 DEFAULT_POLL_INTERVAL = 5.0
 
-
 NON_PLANET_LOCATIONS = {
     EnvironmentLocation.Enum.SpaceStation,
     EnvironmentLocation.Enum.Freighter,

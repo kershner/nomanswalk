@@ -88,7 +88,7 @@ class Config:
         "camera",
         "coords",
         "music",
-        "selfie",
+        # "selfie",
         "teleport",
     }
 
@@ -258,6 +258,7 @@ class VoteState:
 class SelfieSession:
     requested_by: str
     confirm_event: asyncio.Event
+    cancel_event: asyncio.Event
     planet_key: str = ""
     location_data: dict = None
     phase: str = "starting"
@@ -468,10 +469,13 @@ class NMSBot(commands.Bot):
                 await self._say(ctx, "Planet loading; please wait.")
                 return
 
-        # Confirmation is the one command allowed through the selfie lock. It
-        # still validates the sender and the current selfie phase below.
-        if name == "selfie_confirm":
+        # These decisions are allowed through the selfie lock. They still
+        # validate the sender and current selfie phase below.
+        if name == "confirm":
             await self._confirm_selfie(ctx)
+            return
+        if name == "cancel":
+            await self._cancel_selfie(ctx)
             return
 
         if self._lockout_command:
@@ -593,6 +597,7 @@ class NMSBot(commands.Bot):
         session = SelfieSession(
             requested_by=requested_by,
             confirm_event=asyncio.Event(),
+            cancel_event=asyncio.Event(),
             planet_key=planet_key or "",
             location_data=NMSState.get_data(),
             upload_available=upload_available,
@@ -619,8 +624,67 @@ class NMSBot(commands.Bot):
         if session.confirm_event.is_set():
             await self._say(ctx, "That selfie has already been confirmed.")
             return
+        if session.cancel_event.is_set():
+            await self._say(ctx, "That selfie has already been cancelled.")
+            return
 
         session.confirm_event.set()
+
+    async def _cancel_selfie(self, ctx):
+        session = self._selfie_session
+        if session is None or session.phase in {
+            "capturing", "uploading", "cleaning_up", "complete"
+        }:
+            await self._say(ctx, "There is no active selfie to cancel.")
+            return
+
+        username = (getattr(getattr(ctx, "author", None), "name", "") or "").strip().lower()
+        if username != session.requested_by:
+            await self._say(ctx, f"Only @{session.requested_by} can cancel this selfie.")
+            return
+
+        if session.confirm_event.is_set():
+            await self._say(ctx, "That selfie has already been confirmed.")
+            return
+        if session.cancel_event.is_set():
+            await self._say(ctx, "That selfie has already been cancelled.")
+            return
+
+        session.cancel_event.set()
+        await self._say(ctx, f"@{session.requested_by}, selfie cancelled.")
+
+    @staticmethod
+    async def _wait_for_selfie_cancel(session: SelfieSession, seconds: float) -> bool:
+        """Wait for a timed sequence step; return True when it is cancelled."""
+        if session.cancel_event.is_set():
+            return True
+        try:
+            await asyncio.wait_for(session.cancel_event.wait(), timeout=seconds)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    @staticmethod
+    async def _wait_for_selfie_decision(session: SelfieSession) -> str:
+        confirm_task = asyncio.create_task(session.confirm_event.wait())
+        cancel_task = asyncio.create_task(session.cancel_event.wait())
+        tasks = {confirm_task, cancel_task}
+        try:
+            done, _ = await asyncio.wait(
+                tasks,
+                timeout=SelfieConfig.CONFIRM_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                return "timeout"
+            if cancel_task in done and cancel_task.result():
+                return "cancelled"
+            return "confirmed"
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _capture_selfie_file(self):
         screenshot_dir = await asyncio.to_thread(find_nms_screenshot_dir)
@@ -639,37 +703,51 @@ class NMSBot(commands.Bot):
     async def _perform_selfie(self, ctx, session: SelfieSession):
         try:
             log(f"Selfie: starting for @{session.requested_by}.")
-            session.phase = "starting_gesture"
+            session.phase = "preparing_pose"
             await asyncio.to_thread(start_selfie_gesture)
             session.gesture_started = True
-            await asyncio.sleep(SelfieConfig.GESTURE_DELAY_SECONDS)
+            if await self._wait_for_selfie_cancel(
+                session,
+                SelfieConfig.GESTURE_HOLD_SECONDS,
+            ):
+                return "cancelled", None
 
             session.phase = "entering_photo_mode"
             await asyncio.to_thread(enter_photo_mode)
             session.photo_mode_entered = True
-            await asyncio.sleep(SelfieConfig.PHOTO_MODE_SETTLE_SECONDS)
+            if await self._wait_for_selfie_cancel(
+                session,
+                SelfieConfig.PHOTO_MODE_SETTLE_SECONDS,
+            ):
+                return "cancelled", None
 
             session.phase = "positioning_camera"
             await asyncio.to_thread(
                 position_selfie_camera,
                 SelfieConfig.MOD_CAMERA_TIMEOUT_SECONDS,
+                "dev" if self._dev_mode else "production",
             )
+            if session.cancel_event.is_set():
+                return "cancelled", None
 
             if not session.upload_available:
                 session.phase = "limit_preview"
-                await asyncio.sleep(SelfieConfig.LIMIT_POSE_HOLD_SECONDS)
+                if await self._wait_for_selfie_cancel(
+                    session,
+                    SelfieConfig.LIMIT_POSE_HOLD_SECONDS,
+                ):
+                    return "cancelled", None
                 return "limit_preview", None
 
             session.phase = "awaiting_confirmation"
             await self._say(
                 ctx,
-                f"@{session.requested_by}, selfie ready! Use !selfie_confirm within "
-                f"{SelfieConfig.CONFIRM_SECONDS} seconds to take it, or do nothing to cancel.",
+                f"@{session.requested_by}, selfie ready! Use !confirm within "
+                f"{SelfieConfig.CONFIRM_SECONDS} seconds to take it, or use !cancel.",
             )
-            try:
-                await asyncio.wait_for(session.confirm_event.wait(), timeout=SelfieConfig.CONFIRM_SECONDS)
-            except asyncio.TimeoutError:
-                return "timeout", None
+            decision = await self._wait_for_selfie_decision(session)
+            if decision != "confirmed":
+                return decision, None
 
             session.phase = "capturing"
             return "captured", await self._capture_selfie_file()
@@ -742,7 +820,7 @@ class NMSBot(commands.Bot):
         elif outcome == "upload_failed":
             await self._say(ctx, f"@{session.requested_by}, the selfie upload failed.")
         elif outcome == "timeout":
-            await self._say(ctx, f"@{session.requested_by}, !selfie_confirm timed out.")
+            await self._say(ctx, f"@{session.requested_by}, !confirm timed out.")
 
     async def _command_worker(self):
         while True:
@@ -1298,6 +1376,8 @@ class NMSBot(commands.Bot):
                 "help": "Show command list page 1.",
                 "more": "Show command list page 2.",
                 "selfie_lock": "Admin: use !selfie_lock [on|off|status] to control selfie upload limits.",
+                "confirm": "Confirm and capture your selfie during its 60-second confirmation window.",
+                "cancel": "Cancel the active selfie you initiated.",
             }
             if name in meta_help:
                 await self._say(ctx, f"!{name}: {meta_help[name]}")

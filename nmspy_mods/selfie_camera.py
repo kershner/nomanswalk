@@ -26,7 +26,7 @@ import traceback
 from typing import Annotated
 
 from pymhf import Mod
-from pymhf.core.hooking import Structure, function_hook
+from pymhf.core.hooking import Structure, function_hook, on_key_pressed
 
 import nmspy.data.basic_types as basic
 from nmspy.common import gameData
@@ -38,14 +38,26 @@ from shared_state import _make_logger
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REQUEST_FILE = os.path.join(_BASE_DIR, "selfie_camera_request.json")
 STATUS_FILE = os.path.join(_BASE_DIR, "selfie_camera_status.json")
+CAPTURE_FILE = os.path.join(_BASE_DIR, "selfie_camera_capture.json")
 READY_FRAMES = 3
 
-# Permanent player-relative pose captured on the production machine.
-CAMERA_POSITION = (0.5423667653631765, -0.262662771419152, 0.3181329417493077)
-CAMERA_RIGHT = (0.42873366252918177, -0.09981623178182675, -0.8978998755586245)
-CAMERA_UP = (-0.2831883945707452, 0.9289398473614174, -0.23848499317392519)
-CAMERA_AT = (0.8578996290224956, 0.35652136104426724, 0.37000098215630123)
-CAMERA_FOV = 70.0
+# Player-relative camera poses for each bot/server environment.
+CAMERA_PROFILES = {
+    "dev": {
+        "position": (0.3819905381652802, 0.13626888326393963, 0.21394229053180758),
+        "right": (0.5012075726766348, -0.13072791050673693, -0.855395336833628),
+        "up": (-0.10656586226451241, 0.9716729812542269, -0.21093917082922764),
+        "at": (0.8587401722635728, 0.1968802566617144, 0.47307872708164544),
+        "fov": 120.0,
+    },
+    "production": {
+        "position": (0.5423667653631765, -0.262662771419152, 0.3181329417493077),
+        "right": (0.42873366252918177, -0.09981623178182675, -0.8978998755586245),
+        "up": (-0.2831883945707452, 0.9289398473614174, -0.23848499317392519),
+        "at": (0.8578996290224956, 0.35652136104426724, 0.37000098215630123),
+        "fov": 120.0,
+    },
+}
 
 _log = _make_logger("SelfieCamera", "selfie_camera.log")
 
@@ -138,10 +150,51 @@ def _subtract(a, b):
     return tuple(a[index] - b[index] for index in range(3))
 
 
-def _apply_pose(camera, set_position=True):
+def _local(vector, basis):
+    return [_dot(vector, axis) for axis in basis]
+
+
+def _capture_pose(camera):
+    """Write the current player-relative photo-mode pose for calibration."""
     player = gameData.player
     if player is None:
         raise RuntimeError("player is unavailable")
+
+    player_matrix = GetNodeAbsoluteTransMatrix(player.mRootNode)
+    basis = tuple(
+        _normalise(_xyz(axis))
+        for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
+    )
+    camera_matrix = camera.contents.matrix
+    camera_position = tuple(
+        local + offset
+        for local, offset in zip(
+            _xyz(camera_matrix.pos.local),
+            _xyz(camera_matrix.pos.offset),
+        )
+    )
+    position_delta = _subtract(camera_position, _xyz(player_matrix.pos))
+    if not all(math.isfinite(value) for value in position_delta):
+        raise ValueError("invalid camera position")
+    if _length(position_delta) > 100:
+        raise ValueError("camera position is outside the safe capture range")
+
+    pose = {
+        "position": _local(position_delta, basis),
+        "right": _local(_normalise(_xyz(camera_matrix.right)), basis),
+        "up": _local(_normalise(_xyz(camera_matrix.up)), basis),
+        "at": _local(_normalise(_xyz(camera_matrix.at)), basis),
+        "fov": float(gameData.player_state.mPhotoModeSettings.FoV),
+    }
+    _atomic_json(CAPTURE_FILE, pose)
+    return pose
+
+
+def _apply_pose(camera, profile, set_position=True):
+    player = gameData.player
+    if player is None:
+        raise RuntimeError("player is unavailable")
+    pose = CAMERA_PROFILES[profile]
 
     player_matrix = GetNodeAbsoluteTransMatrix(player.mRootNode)
     basis = tuple(_normalise(_xyz(axis)) for axis in (
@@ -151,11 +204,11 @@ def _apply_pose(camera, set_position=True):
     ))
     camera_matrix = camera.contents.matrix
 
-    _set_vector(camera_matrix.right, _normalise(_to_world(CAMERA_RIGHT, basis)))
-    _set_vector(camera_matrix.up, _normalise(_to_world(CAMERA_UP, basis)))
-    _set_vector(camera_matrix.at, _normalise(_to_world(CAMERA_AT, basis)))
+    _set_vector(camera_matrix.right, _normalise(_to_world(pose["right"], basis)))
+    _set_vector(camera_matrix.up, _normalise(_to_world(pose["up"], basis)))
+    _set_vector(camera_matrix.at, _normalise(_to_world(pose["at"], basis)))
 
-    relative_position = _to_world(CAMERA_POSITION, basis)
+    relative_position = _to_world(pose["position"], basis)
     player_position = _xyz(player_matrix.pos)
     desired_position = tuple(
         player_position[index] + relative_position[index]
@@ -164,11 +217,11 @@ def _apply_pose(camera, set_position=True):
     if set_position:
         big_position_offset = _xyz(camera_matrix.pos.offset)
         _set_vector(camera_matrix.pos.local, _subtract(desired_position, big_position_offset))
-    gameData.player_state.mPhotoModeSettings.FoV = CAMERA_FOV
+    gameData.player_state.mPhotoModeSettings.FoV = pose["fov"]
     return player_position, desired_position
 
 
-def _finish_pose(camera):
+def _finish_pose(camera, profile):
     camera_matrix = camera.contents.matrix
     actual_position = tuple(
         local + offset
@@ -177,7 +230,11 @@ def _finish_pose(camera):
             _xyz(camera_matrix.pos.offset),
         )
     )
-    player_position, desired_position = _apply_pose(camera, set_position=False)
+    player_position, desired_position = _apply_pose(
+        camera,
+        profile,
+        set_position=False,
+    )
     actual_delta = _subtract(actual_position, player_position)
     desired_delta = _subtract(desired_position, player_position)
     desired_distance_squared = _dot(desired_delta, desired_delta)
@@ -210,12 +267,19 @@ class SelfieCamera(Mod):
         self._expires_at = 0.0
         self._ready_frames = 0
         self._request_mtime = None
+        self._capture_requested = False
+        self._profile = "production"
         _log.info("Selfie camera loaded with permanent pose")
+
+    @on_key_pressed("f11")
+    def request_capture(self):
+        self._capture_requested = True
 
     def _clear(self):
         self._request_id = None
         self._expires_at = 0.0
         self._ready_frames = 0
+        self._profile = "production"
 
     def _poll_request(self):
         try:
@@ -236,10 +300,14 @@ class SelfieCamera(Mod):
                 request = json.load(file)
             request_id = str(request["request_id"])
             expires_at = float(request["expires_at"])
+            profile = str(request.get("profile", "production")).strip().lower()
             if expires_at <= time.time():
                 raise ValueError("request expired")
+            if profile not in CAMERA_PROFILES:
+                raise ValueError(f"unknown camera profile: {profile}")
             self._request_id = request_id
             self._expires_at = expires_at
+            self._profile = profile
             self._ready_frames = 0
             _write_status(request_id, "positioning")
         except Exception as error:
@@ -257,7 +325,7 @@ class SelfieCamera(Mod):
                 _write_status(self._request_id, "error", "request expired")
                 self._clear()
                 return
-            _apply_pose(camera)
+            _apply_pose(camera, self._profile)
         except Exception as error:
             request_id = self._request_id or ""
             self._clear()
@@ -266,10 +334,17 @@ class SelfieCamera(Mod):
 
     @_PhotoModeCameraBehaviour.Update.after
     def after_photo_camera_update(self, this, lfTimeStep, camera):
+        if self._capture_requested:
+            self._capture_requested = False
+            try:
+                pose = _capture_pose(camera)
+                _log.info("Captured selfie camera diagnostic pose: %s", pose)
+            except Exception:
+                _log.error("Selfie camera capture failed:\n%s", traceback.format_exc())
         if not self._request_id:
             return
         try:
-            _finish_pose(camera)
+            _finish_pose(camera, self._profile)
         except Exception as error:
             request_id = self._request_id
             self._clear()
