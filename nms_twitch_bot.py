@@ -1,6 +1,6 @@
 from nms_bot import (
     COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig,
-    _normalize_teleport_destination, cancel_movement, capture_steam_screenshot,
+    _normalize_teleport_destination, cancel_movement, capture_visible_game_frame,
     end_selfie_gesture,
     enter_photo_mode, exit_photo_mode, get_canonical_command_name,
     get_command_state, get_current_planet_key, get_daily_selfie_uploads, get_movement_generation,
@@ -11,10 +11,7 @@ from nms_bot import (
     start_selfie_gesture, start_state_poller,
 )
 from galaxy_names import get_galaxy_name
-from steam_screenshots import (
-    delete_screenshot, find_nms_screenshot_dir, snapshot_screenshots,
-    wait_for_new_screenshot,
-)
+from steam_screenshots import delete_screenshot
 from twitchio.ext.commands.errors import CommandNotFound
 from utils import log, get_info_text, get_location_text
 from datetime import datetime, timedelta
@@ -695,18 +692,7 @@ class NMSBot(commands.Bot):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _capture_selfie_file(self):
-        screenshot_dir = await asyncio.to_thread(find_nms_screenshot_dir)
-        before = await asyncio.to_thread(snapshot_screenshots, screenshot_dir)
-        captured_after_ns = time.time_ns()
-        await asyncio.to_thread(capture_steam_screenshot)
-        await asyncio.sleep(0.5)
-        return await asyncio.to_thread(
-            wait_for_new_screenshot,
-            screenshot_dir,
-            before,
-            SelfieConfig.SCREENSHOT_WAIT_SECONDS,
-            captured_after_ns,
-        )
+        return await asyncio.to_thread(capture_visible_game_frame)
 
     async def _perform_selfie(self, ctx, session: SelfieSession):
         try:

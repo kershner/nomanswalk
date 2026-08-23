@@ -2,12 +2,14 @@ from utils import focus_nms, send_key, log
 from command_block_lists import blocked_commands_for_state, resolve_command_state
 from dataclasses import dataclass
 from datetime import datetime
+from PIL import ImageGrab
 from typing import Callable
 import threading
 import keyboard
 import pytz
 import win32api
 import win32con
+import win32gui
 import ctypes
 import json
 import time
@@ -856,10 +858,35 @@ def enter_photo_mode(args=None):
     send_key("2", 0.1)
 
 
-def capture_steam_screenshot():
-    """Capture the visible photo-mode framebuffer, including its glyph overlay."""
-    focus_nms()
-    send_key("f12", 0.1)
+def capture_visible_game_frame():
+    """Save the visible NMS client area, including its photo-mode glyph overlay."""
+    hwnd, _ = focus_nms()
+    if not hwnd:
+        raise RuntimeError("NMS window was not found for screenshot capture")
+
+    client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    client_rect = win32gui.GetClientRect(hwnd)
+    width = client_rect[2] - client_rect[0]
+    height = client_rect[3] - client_rect[1]
+    if width <= 0 or height <= 0:
+        raise RuntimeError("NMS client area has invalid dimensions")
+
+    capture_dir = os.path.join(BASE_DIR, "selfie_captures")
+    os.makedirs(capture_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    capture_path = os.path.join(capture_dir, f"selfie_{timestamp}.jpg")
+    image = ImageGrab.grab(
+        bbox=(
+            client_left,
+            client_top,
+            client_left + width,
+            client_top + height,
+        ),
+        all_screens=True,
+    )
+    image.convert("RGB").save(capture_path, format="JPEG", quality=95)
+    log(f"Selfie: captured visible game frame at {capture_path}")
+    return capture_path
 
 
 def exit_photo_mode(args=None):
