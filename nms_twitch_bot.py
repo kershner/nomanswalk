@@ -79,7 +79,6 @@ class Config:
 
     ADMIN_ONLY_COMMANDS = {
         "next_planet",
-        "selfie_debug",
         "selfie_lock",
     }
 
@@ -265,7 +264,6 @@ class SelfieSession:
     photo_mode_entered: bool = False
     upload_available: bool = True
     limits_enabled: bool = True
-    debug: bool = False
 
 
 def _build_selfie_caption(viewer, state):
@@ -564,10 +562,9 @@ class NMSBot(commands.Bot):
         self._active_command_tasks.add(task)
         task.add_done_callback(self._active_command_tasks.discard)
 
-    async def _start_selfie(self, ctx, args: list[str], requested_by, debug=False):
+    async def _start_selfie(self, ctx, args: list[str], requested_by):
         if args:
-            command = "selfie_debug" if debug else "selfie"
-            await self._say(ctx, f"Use !{command} without options.")
+            await self._say(ctx, "Use !selfie without options.")
             return
 
         state = NMSState.get()
@@ -603,10 +600,9 @@ class NMSBot(commands.Bot):
             location_data=NMSState.get_data(),
             upload_available=upload_available,
             limits_enabled=self._selfie_limits_enabled,
-            debug=debug,
         )
         self._selfie_session = session
-        self._lockout_command = "selfie_debug" if debug else "selfie"
+        self._lockout_command = "selfie"
 
         task = asyncio.create_task(self._run_selfie(ctx, session))
         self._active_command_tasks.add(task)
@@ -614,9 +610,6 @@ class NMSBot(commands.Bot):
 
     async def _confirm_selfie(self, ctx):
         session = self._selfie_session
-        if session is not None and session.debug:
-            await self._say(ctx, "Debug selfie is calibration-only; press F11 to save the pose, then use !cancel.")
-            return
         if session is None or session.phase != "awaiting_confirmation":
             await self._say(ctx, "There is no selfie waiting for confirmation.")
             return
@@ -724,20 +717,6 @@ class NMSBot(commands.Bot):
             if session.cancel_event.is_set():
                 return "cancelled", None
 
-            if session.debug:
-                # The request must be removed after the configured pose has
-                # been applied or the mod will keep overriding manual camera
-                # adjustments on every photo-mode frame.
-                await asyncio.to_thread(release_selfie_camera)
-                session.phase = "awaiting_debug"
-                await self._say(
-                    ctx,
-                    f"@{session.requested_by}, debug selfie ready. Adjust the camera, "
-                    "press F11 to save the pose, then use !cancel.",
-                )
-                await session.cancel_event.wait()
-                return "cancelled", None
-
             if not session.upload_available:
                 session.phase = "limit_preview"
                 if await self._wait_for_selfie_cancel(
@@ -803,12 +782,9 @@ class NMSBot(commands.Bot):
             log(f"Selfie upload failed for @{session.requested_by}: {e}")
             return "upload_failed", None
         finally:
-            if SelfieConfig.PRESERVE_CAPTURED_SCREENSHOT:
-                log(f"Selfie: preserved captured screenshot at {screenshot_path}")
-            else:
-                deleted = await asyncio.to_thread(delete_screenshot, screenshot_path)
-                if not deleted:
-                    log(f"Selfie cleanup could not delete screenshot: {screenshot_path}")
+            deleted = await asyncio.to_thread(delete_screenshot, screenshot_path)
+            if not deleted:
+                log(f"Selfie cleanup could not delete screenshot: {screenshot_path}")
 
     async def _run_selfie(self, ctx, session: SelfieSession):
         outcome = "cancelled"
@@ -821,7 +797,7 @@ class NMSBot(commands.Bot):
             session.phase = "complete"
             if self._selfie_session is session:
                 self._selfie_session = None
-            if self._lockout_command in {"selfie", "selfie_debug"}:
+            if self._lockout_command == "selfie":
                 self._lockout_command = None
             log(f"Selfie: {outcome} for @{session.requested_by}.")
 
@@ -1387,7 +1363,6 @@ class NMSBot(commands.Bot):
                 "help": "Show command list page 1.",
                 "more": "Show command list page 2.",
                 "selfie_lock": "Admin: use !selfie_lock [on|off|status] to control selfie upload limits.",
-                "selfie_debug": "Admin: run the selfie setup, then release the camera for F11 pose calibration and !cancel.",
                 "confirm": "Confirm and capture your selfie during its 60-second confirmation window.",
                 "cancel": "Cancel the active selfie you initiated.",
             }
@@ -1456,16 +1431,6 @@ class NMSBot(commands.Bot):
         if name == "selfie_lock":
             if self._is_admin(ctx.author.name):
                 await self._set_selfie_lock(ctx, args)
-            return
-
-        if name == "selfie_debug":
-            if self._is_admin(ctx.author.name):
-                await self._start_selfie(
-                    ctx,
-                    args,
-                    requested_by=ctx.author.name,
-                    debug=True,
-                )
             return
 
         if name not in COMMANDS:
