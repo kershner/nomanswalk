@@ -44,7 +44,6 @@ LAUNCH_BLOCKED_COMMANDS = [
 
 # Restrictions shared by states where the player controls a ship.
 IN_COCKPIT_BLOCKED_COMMANDS = [
-    "dig",
     "sky",
     "jet",
     "walk",

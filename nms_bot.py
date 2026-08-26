@@ -577,11 +577,6 @@ def jet(args=None, movement_generation=None):
     _hold_movement_key("space", 2.5, movement_generation)
 
 
-def dig(args=None):
-    """Hold left click for 10 seconds"""
-    left_click(10.0)
-
-
 def sky(args=None):
     """Press Y to trigger the sky-drop mod"""
     send_key("y", 0.1)
@@ -1119,7 +1114,6 @@ class Command:
 
 COMMANDS: dict[str, Command] = {
     "jet":     Command(jet,     "On foot: hold the jetpack key for 2.5 seconds.", aliases=("j",)),
-    "dig":     Command(dig,     "Hold the left mouse button for 10 seconds to dig terrain."),
     "sky":     Command(sky,     "Drop the Walker from high above the planet."),
     "walk":    Command(walk,    "Start continuous forward walking.", aliases=("w",)),
     "stop":    Command(stop,    "Stop all active and queued movement immediately.", aliases=("s",)),
