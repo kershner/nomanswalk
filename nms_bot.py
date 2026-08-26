@@ -1028,6 +1028,22 @@ def _do_teleport(key, label):
     log(f"{label}: planet load wait complete.")
     
 
+def _validate_portal_address(address: str) -> None:
+    """Reject portal fields that NMS reserves or cannot target."""
+    planet = int(address[0], 16)
+    system = int(address[1:4], 16)
+    voxel_y = int(address[4:6], 16)
+    voxel_z = int(address[6:9], 16)
+    voxel_x = int(address[9:12], 16)
+
+    if not 1 <= planet <= 6:
+        raise ValueError("Invalid portal address: the planet glyph must be from 1 to 6.")
+    if system in (0, 0xFFF):
+        raise ValueError("Invalid portal address: the system cannot be 000 or FFF.")
+    if voxel_y == 0x80 or voxel_z == 0x800 or voxel_x == 0x800:
+        raise ValueError("Invalid portal address: it contains a reserved center coordinate.")
+
+
 def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
     address = None
     galaxy = None
@@ -1045,6 +1061,7 @@ def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
             address = value.upper()
             if len(address) != 12 or any(c not in "0123456789ABCDEF" for c in address):
                 raise ValueError("Planet address must be exactly 12 hexadecimal characters.")
+            _validate_portal_address(address)
         else:
             if galaxy is not None:
                 raise ValueError("Galaxy can only be supplied once.")

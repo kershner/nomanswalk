@@ -81,6 +81,7 @@ class NMSModState(ModState):
     dest_vz: int = 0
     dest_sys: int = 0
     dest_planet: int = 0
+    dest_reality: int = 0
     teleport_deferred: bool = False  # armed by key hook, fired by Update tick
 
 
