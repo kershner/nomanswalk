@@ -40,6 +40,7 @@ class SelfieConfig:
     GESTURE_HOLD_SECONDS = 4           # Let the gesture reach its pose
     GESTURE_HOTKEY = "7"               # Gesture quickslot
     PHOTO_MODE_SETTLE_SECONDS = 1      # Wait for photo mode
+    AUTOWALK_RESUME_DELAY_SECONDS = 1  # Let photo-mode cleanup finish before K
 
     CONFIRM_SECONDS = 60              # Confirmation window
     DAILY_UPLOAD_LIMIT = 3            # Successful posts per day
