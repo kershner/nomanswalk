@@ -78,7 +78,6 @@ class Config:
     ]
 
     ADMIN_ONLY_COMMANDS = {
-        "next_planet",
         "selfie_lock",
     }
 
@@ -131,7 +130,6 @@ class Config:
 
     FORCED_QUEUE_COMMANDS = {
         "teleport",
-        "next_planet",
         "coords",
     }
 
@@ -1127,12 +1125,12 @@ class NMSBot(commands.Bot):
         help_text = self._vote_help_text(name)
 
         if is_teleport:
-            address, galaxy = _normalize_teleport_destination(args)
+            planet, galaxy = _normalize_teleport_destination(args)
             if galaxy is not None:
                 galaxy_text = f"{get_galaxy_name(galaxy)} (Galaxy {galaxy})"
             else:
-                galaxy_text = "the current galaxy" if address else "a random galaxy"
-            teleport_text = f"{address} in {galaxy_text}" if address else f"Random planet in {galaxy_text}"
+                galaxy_text = "the current galaxy" if planet else "a random galaxy"
+            teleport_text = f"{planet} in {galaxy_text}" if planet else f"Random planet in {galaxy_text}"
 
             await self._say(
                 ctx,
@@ -1456,16 +1454,16 @@ class NMSBot(commands.Bot):
 
         if name == "teleport" and args:
             try:
-                address, galaxy = _normalize_teleport_destination(args)
+                planet, galaxy = _normalize_teleport_destination(args)
             except ValueError as e:
                 await self._say(ctx, str(e))
                 return
 
             args = []
-            if address:
-                args.append(f"address={address}")
+            if planet:
+                args.append(planet)
             if galaxy is not None:
-                args.append(f"galaxy={galaxy}")
+                args.append(str(galaxy))
 
         if is_planet_loading():
             await self._say(ctx, "Planet loading; please wait before sending commands.")

@@ -1041,23 +1041,34 @@ def _validate_portal_address(address: str) -> None:
 
 
 def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
-    address = None
+    planet = None
     galaxy = None
 
     for arg in args or []:
-        key, sep, value = str(arg).partition("=")
-        key = key.strip().lower()
-        value = value.strip()
-        if not sep or key not in {"address", "galaxy"} or not value:
-            raise ValueError("Use !teleport [address=HEX] [galaxy=NUMBER].")
+        value = str(arg).strip()
+        if not value or "=" in value:
+            raise ValueError("Use !teleport [12-digit planet hex] [galaxy 1-255].")
 
-        if key == "address":
-            if address is not None:
-                raise ValueError("Address can only be supplied once.")
-            address = value.upper()
-            if len(address) != 12 or any(c not in "0123456789ABCDEF" for c in address):
-                raise ValueError("Planet address must be exactly 12 hexadecimal characters.")
-            _validate_portal_address(address)
+        # A portal address is always 12 characters. Check its shape before
+        # trying a number so an all-numeric address is not read as a galaxy.
+        if len(value) == 12:
+            key = "planet"
+        else:
+            try:
+                int(value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Cannot identify teleport parameter '{value}'. Use a 12-digit planet hex or galaxy 1-255."
+                ) from exc
+            key = "galaxy"
+
+        if key == "planet":
+            if planet is not None:
+                raise ValueError("Planet can only be supplied once.")
+            planet = value.upper()
+            if len(planet) != 12 or any(c not in "0123456789ABCDEF" for c in planet):
+                raise ValueError("Planet must be exactly 12 hexadecimal characters.")
+            _validate_portal_address(planet)
         else:
             if galaxy is not None:
                 raise ValueError("Galaxy can only be supplied once.")
@@ -1068,12 +1079,13 @@ def _normalize_teleport_destination(args) -> tuple[str | None, int | None]:
             if not 1 <= galaxy <= 255:
                 raise ValueError("Galaxy must be a number from 1 to 255.")
 
-    return address, galaxy
+    return planet, galaxy
 
-def _write_teleport_request(address: str | None, galaxy: int | None = None) -> None:
+def _write_teleport_request(planet: str | None, galaxy: int | None = None) -> None:
     payload = {}
-    if address is not None:
-        payload["address"] = address
+    if planet is not None:
+        # The nmspy mod's file contract still calls this field "address".
+        payload["address"] = planet
     if galaxy is not None:
         payload["reality"] = galaxy - 1
 
@@ -1089,16 +1101,11 @@ def teleport(args=None):
         log("Teleport ignored: the player is not on a planet.")
         return
 
-    address, galaxy = _normalize_teleport_destination(args)
+    planet, galaxy = _normalize_teleport_destination(args)
 
-    if address or galaxy is not None:
-        _write_teleport_request(address, galaxy)
+    if planet or galaxy is not None:
+        _write_teleport_request(planet, galaxy)
     _do_teleport("o", "Teleport")
-
-
-def next_planet(args=None):
-    """Send the '[' key to teleport to a nearby planet, then wait for the planet to load."""
-    _do_teleport("[", "NextPlanet")
 
 
 # ---------------------------------------------------------------------------
@@ -1135,8 +1142,7 @@ COMMANDS: dict[str, Command] = {
     "right_click": Command(right_click_cmd, "Click or hold right mouse for up to 10 seconds. e.g. !rc 5", aliases=("rc",)),
     "coords":  Command(coords,  "Start a vote to show the Walker's current planetary coordinates for 10 seconds."),
     "selfie":  Command(start_selfie_gesture, "Set up a selfie and wait for the requesting viewer to use !confirm."),
-    "teleport": Command(teleport, "!teleport [address=HEX] [galaxy=NUMBER] | No options selects a random planet in a random galaxy. galaxy=NUMBER selects a random planet in that galaxy. address=HEX selects that location in the current galaxy. Use both to select a specific location in a specific galaxy."),
-    "next_planet": Command(next_planet, "Teleport to a nearby planet.", hidden=True),
+    "teleport": Command(teleport, "Teleport to [12-digit planet hex] [galaxy 1-255]. Values are optional, auto-detected, and can be in either order; no values means random."),
     "ship": Command(ship, "Select the Walker's ship placement quickslot."),
     "anomaly": Command(anomaly, "Select the Space Anomaly placement quickslot."),
     "pet": Command(pet, "Select the Walker's pet placement quickslot."),

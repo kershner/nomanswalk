@@ -51,6 +51,7 @@ VOXEL_Y_MAX = 255
 SYSTEM_MAX = 599
 SAFE_PLANET_INDEX = 0
 LOAD_TIMEOUT_S = 25.0
+PORTAL_TRANSACTION_TIMEOUT_S = 60.0
 RAW_PORTAL_ALLOCATION_SIZE = 0x1000
 TELEPORT_REQUEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teleport_request.json")
 
@@ -62,8 +63,8 @@ _live_game_state_ptr = None
 _live_game_state_update_count = 0
 
 
-# Only fields used by portal warping are mapped. Game-owned instances are
-# preferred; the raw path compensates with a larger backing allocation.
+# Only fields used by portal warping are mapped. The raw path compensates with
+# a larger backing allocation; game-owned instances are consumed immediately.
 @partial_struct
 class cGcPortalComponent(Structure):
     mTargetUA: Annotated[ctypes.c_ulonglong, Field(ctypes.c_ulonglong, 0x88)]
@@ -243,6 +244,28 @@ def _pack_universe_address(destination, reality_idx):
     )
 
 
+def _encode_portal_address(destination):
+    """Encode a generated destination as a valid 12-glyph portal address."""
+    return (
+        f"{int(destination['planet']) + 1:X}"
+        f"{int(destination['system']):03X}"
+        f"{int(destination['voxel_y']) & 0xFF:02X}"
+        f"{int(destination['voxel_z']) & 0xFFF:03X}"
+        f"{int(destination['voxel_x']) & 0xFFF:03X}"
+    )
+
+
+def _random_portal_destination():
+    return {
+        "voxel_x": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+        # Portal Y is signed 8-bit; -128/0x80 is reserved.
+        "voxel_y": random.randint(-127, 127),
+        "voxel_z": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
+        "system": random.randint(1, SYSTEM_MAX),
+        "planet": SAFE_PLANET_INDEX,
+    }
+
+
 def _read_teleport_request():
     try:
         with open(TELEPORT_REQUEST_FILE, "r", encoding="utf-8") as f:
@@ -368,52 +391,56 @@ def _flush_deferred_teleport(state):
 class Teleporter(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Random and portal-address teleporter"
-    __version__ = "1.9.1-packed-ua-cleanup"
+    __version__ = "2.0.0-transient-two-stage"
 
     state = NMSModState()
     _portal_component = None
-    _portal_component_origin = None
     _raw_portal_buffer = None
     _raw_component_address = None
+    _pending_portal_request = None
 
     @cGcPortalComponent.Prepare.after
     def capture_portal_component(
         self,
         this: ctypes._Pointer[cGcPortalComponent],
     ):
-        """Remember a fully initialized, game-owned portal component."""
+        """Capture a game-owned component only for the active two-stage warp."""
         try:
             component = this.contents
             component_address = ctypes.addressof(component)
             if component_address == self._raw_component_address:
                 _tlog.info("[PORTAL] Raw component initialized by Prepare")
                 return
+
+            # Never cache arbitrary portal objects between commands. A live
+            # component is useful only while a bootstrap warp is awaiting its
+            # immediate native correction.
+            if self._pending_portal_request is None:
+                return
+
+            self._clear_portal_component("replaced by fresher capture")
             self._portal_component = component
             current = _read_location_dict()
-            self._portal_component_origin = (
-                current["reality"],
-                current["voxel_x"],
-                current["voxel_y"],
-                current["voxel_z"],
-                current["system"],
-                current["planet"],
-            ) if current else None
             _tlog.info(
-                "[PORTAL] Captured live component addr=0x%X target_ua=%016X origin=%s",
+                "[PORTAL] Captured transient live component addr=0x%X target_ua=%016X location=%s",
                 component_address,
                 int(component.mTargetUA),
-                self._portal_component_origin,
+                current,
             )
         except Exception:
             self._portal_component = None
-            self._portal_component_origin = None
             _tlog.warning("[PORTAL] Component capture failed:\n%s", traceback.format_exc())
 
     def _clear_portal_component(self, reason):
         if self._portal_component is not None:
             _tlog.info("[PORTAL] Releasing captured component (%s)", reason)
         self._portal_component = None
-        self._portal_component_origin = None
+
+    def _clear_portal_transaction(self, reason):
+        if self._pending_portal_request is not None:
+            _tlog.info("[PORTAL] Clearing pending two-stage warp (%s)", reason)
+        self._pending_portal_request = None
+        self._clear_portal_component(reason)
 
     def _clear_raw_component(self, reason):
         if self._raw_portal_buffer is not None:
@@ -429,10 +456,34 @@ class Teleporter(Mod):
         self.state.dest_planet = destination["planet"]
         self.state.dest_reality = reality_idx
 
+    def _start_portal_transaction(self, address, destination, reality_idx):
+        if (
+            self._pending_portal_request is not None
+            or self.state.loading
+            or self.state.teleport_deferred
+        ):
+            _tlog.warning("[PORTAL] A teleport is already in progress")
+            return
+
+        # Each command starts clean. The raw warp exists only to make NMS
+        # initialize a real portal component; that fresh component immediately
+        # performs the final, planet-correct warp.
+        self._clear_portal_component("starting fresh two-stage warp")
+        self._clear_raw_component("starting fresh two-stage warp")
+        self._pending_portal_request = {
+            "address": address,
+            "destination": dict(destination),
+            "reality": reality_idx,
+            "started_at": time.time(),
+        }
+        _tlog.info("[PORTAL] Starting fresh two-stage warp")
+        self._raw_portal_warp(address, destination, reality_idx)
+
     def _raw_portal_warp(self, address, destination, reality_idx):
-        """Issue a portal warp without requiring a previously loaded portal."""
+        """Bootstrap a portal load so NMS supplies a fresh real component."""
         if self.state.loading or self.state.teleport_deferred:
             _tlog.warning("[PORTAL] A teleport is already in progress")
+            self._clear_portal_transaction("bootstrap could not start")
             return
 
         try:
@@ -477,17 +528,17 @@ class Teleporter(Mod):
         except Exception:
             self.state.loading = False
             self._clear_raw_component("raw warp failed")
+            self._clear_portal_transaction("raw warp failed")
             _tlog.error("[PORTAL] Direct raw warp failed:\n%s", traceback.format_exc())
 
     def _native_portal_warp(self, address, destination, reality_idx):
-        """Use the game's portal pipeline so it retains the target planet."""
+        """Complete a pending warp with the freshly captured component."""
         component = self._portal_component
         if component is None:
-            return False
+            return
 
         if self.state.loading or self.state.teleport_deferred:
-            _tlog.warning("[PORTAL] A teleport is already in progress")
-            return True
+            return
 
         try:
             target_ua = _pack_universe_address(destination, reality_idx)
@@ -508,8 +559,7 @@ class Teleporter(Mod):
             self._record_destination(destination, reality_idx)
 
             if not _write_reality_index(reality_idx):
-                _tlog.error("[PORTAL] Could not seed requested galaxy")
-                return True
+                raise RuntimeError("could not seed requested galaxy")
 
             component.mTargetUA = target_ua
             component.mbActive = True
@@ -517,15 +567,35 @@ class Teleporter(Mod):
             self.state.load_start_time = time.time()
             component.WarpPlayer(0, 0, 0)
 
-            # The component belongs to the scene being left. Never reuse it;
-            # the destination portal's Prepare hook can supply the next one.
-            self._clear_portal_component("native warp issued")
-            return True
+            # This component and destination belong only to this command.
+            self._clear_portal_transaction("native warp issued")
         except Exception:
             self.state.loading = False
-            self._clear_portal_component("native warp failed")
+            self._clear_portal_transaction("native warp failed")
             _tlog.error("[PORTAL] Native warp failed:\n%s", traceback.format_exc())
-            return True
+
+    def _advance_portal_transaction(self):
+        pending = self._pending_portal_request
+        if pending is None:
+            return
+
+        age = time.time() - pending["started_at"]
+        if age > PORTAL_TRANSACTION_TIMEOUT_S:
+            self._clear_portal_transaction("timed out after %.1fs" % age)
+            return
+
+        # The bootstrap buffer must be out of use and the first load complete
+        # before the freshly captured game component starts the native warp.
+        if self.state.loading or self._raw_portal_buffer is not None:
+            return
+        if self._portal_component is None:
+            return
+
+        self._native_portal_warp(
+            pending["address"],
+            pending["destination"],
+            pending["reality"],
+        )
 
     @nms.cGcGameState.Update.before
     def on_game_state_update(self, this, lfTimeStep):
@@ -534,20 +604,6 @@ class Teleporter(Mod):
         try:
             _live_game_state_ptr = this
             _live_game_state_update_count += 1
-
-            if self._portal_component_origin is not None and not self.state.loading:
-                current = _read_location_dict()
-                if current is not None:
-                    current_origin = (
-                        current["reality"],
-                        current["voxel_x"],
-                        current["voxel_y"],
-                        current["voxel_z"],
-                        current["system"],
-                        current["planet"],
-                    )
-                    if current_origin != self._portal_component_origin:
-                        self._clear_portal_component("player location changed")
         except Exception:
             pass
 
@@ -556,6 +612,7 @@ class Teleporter(Mod):
         _flush_deferred_teleport(self.state)
         if self._raw_portal_buffer is not None and not self.state.loading:
             self._clear_raw_component("load finished or timed out")
+        self._advance_portal_transaction()
 
     @nms.cTkFSMState.StateChange.after
     def on_fsm_state_change(
@@ -574,9 +631,9 @@ class Teleporter(Mod):
                 self._clear_raw_component("APPVIEW reached")
 
             elif name in ("APPLOCALLOAD", "MODESELECTOR", "APPSHUTDOWN", "APPGLOBALLOAD"):
-                self._clear_portal_component("FSM state %s" % name)
                 if name != "APPLOCALLOAD":
                     self._clear_raw_component("FSM state %s" % name)
+                    self._clear_portal_transaction("FSM state %s" % name)
                 if self.state.loading:
                     if name != "APPLOCALLOAD":
                         _tlog.warning("[FSM] Unexpected state '%s' while loading — clearing", name)
@@ -602,13 +659,11 @@ class Teleporter(Mod):
     @on_key_pressed("o")
     def key_teleport(self):
         if not os.path.exists(TELEPORT_REQUEST_FILE):
-            _prepare_teleport(
-                self.state,
-                random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                random.randint(0, VOXEL_Y_MAX),
-                random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                random.randint(0, SYSTEM_MAX),
-            )
+            destination = _random_portal_destination()
+            address = _encode_portal_address(destination)
+            reality_idx = random.randint(GALAXY_MIN, GALAXY_MAX)
+            _tlog.info("[ADDRESS] Random %s -> reality=%d destination=%s", address, reality_idx, destination)
+            self._start_portal_transaction(address, destination, reality_idx)
             return
 
         address, destination, requested_reality = _read_teleport_request()
@@ -622,30 +677,10 @@ class Teleporter(Mod):
 
         reality_idx = cur["reality"] if requested_reality is None else requested_reality
         if destination is None:
-            destination = {
-                "voxel_x": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                "voxel_y": random.randint(0, VOXEL_Y_MAX),
-                "voxel_z": random.randint(-VOXEL_XZ_MAX, VOXEL_XZ_MAX),
-                "system": random.randint(0, SYSTEM_MAX),
-                "planet": SAFE_PLANET_INDEX,
-            }
+            destination = _random_portal_destination()
+            address = _encode_portal_address(destination)
         _tlog.info("[ADDRESS] %s -> reality=%d destination=%s", address, reality_idx, destination)
-        if address and self._native_portal_warp(address, destination, reality_idx):
-            return
-
-        if address:
-            _tlog.info("[PORTAL] No live component; issuing direct raw portal warp")
-            self._raw_portal_warp(address, destination, reality_idx)
-            return
-        _prepare_teleport(
-            self.state,
-            destination["voxel_x"],
-            destination["voxel_y"],
-            destination["voxel_z"],
-            destination["system"],
-            planet_idx=destination["planet"],
-            reality_idx=reality_idx,
-        )
+        self._start_portal_transaction(address, destination, reality_idx)
 
     @on_key_pressed("p")
     def key_random_galaxy(self):
@@ -670,26 +705,3 @@ class Teleporter(Mod):
             reality_idx=new_reality,
         )
 
-    @on_key_pressed("[")
-    def key_nearby(self):
-        cur = _read_location_dict()
-
-        if cur is None:
-            _tlog.error("[[] Cannot read current location")
-            return
-
-        cur_sys = cur["system"]
-        new_sys = cur_sys
-
-        while new_sys == cur_sys:
-            new_sys = random.randint(0, SYSTEM_MAX)
-
-        _prepare_teleport(
-            self.state,
-            cur["voxel_x"],
-            cur["voxel_y"],
-            cur["voxel_z"],
-            new_sys,
-            planet_idx=cur["planet"],
-            reality_idx=cur["reality"],
-        )
