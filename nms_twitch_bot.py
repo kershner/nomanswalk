@@ -78,6 +78,7 @@ class Config:
     ]
 
     ADMIN_ONLY_COMMANDS = {
+        "selfie_debug",
         "selfie_lock",
     }
 
@@ -262,6 +263,7 @@ class SelfieSession:
     photo_mode_entered: bool = False
     upload_available: bool = True
     limits_enabled: bool = True
+    debug: bool = False
 
 
 def _build_selfie_caption(viewer, state):
@@ -480,7 +482,10 @@ class NMSBot(commands.Bot):
 
         canonical_name = get_canonical_command_name(name)
 
-        if name in {"yes", "no", "help", "more", "info", "location", "loc", "selfie_lock"} or name in COMMANDS:
+        if name in {
+            "yes", "no", "help", "more", "info", "location", "loc",
+            "selfie_lock",
+        } or name in COMMANDS:
             record_daily_command(getattr(getattr(ctx, "author", None), "name", ""))
 
         if name == "yes":
@@ -560,7 +565,7 @@ class NMSBot(commands.Bot):
         self._active_command_tasks.add(task)
         task.add_done_callback(self._active_command_tasks.discard)
 
-    async def _start_selfie(self, ctx, args: list[str], requested_by):
+    async def _start_selfie(self, ctx, args: list[str], requested_by, debug=False):
         if args:
             await self._say(ctx, "Use !selfie without options.")
             return
@@ -581,14 +586,16 @@ class NMSBot(commands.Bot):
             return
 
         planet_key = get_current_planet_key()
-        upload_available = (
-            not self._selfie_limits_enabled
-            or (
-                get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
-                and not has_daily_selfie_upload(requested_by)
-                and not has_selfie_planet_upload(planet_key)
+        upload_available = False
+        if not debug:
+            upload_available = (
+                not self._selfie_limits_enabled
+                or (
+                    get_daily_selfie_uploads() < SelfieConfig.DAILY_UPLOAD_LIMIT
+                    and not has_daily_selfie_upload(requested_by)
+                    and not has_selfie_planet_upload(planet_key)
+                )
             )
-        )
 
         session = SelfieSession(
             requested_by=requested_by,
@@ -598,6 +605,7 @@ class NMSBot(commands.Bot):
             location_data=NMSState.get_data(),
             upload_available=upload_available,
             limits_enabled=self._selfie_limits_enabled,
+            debug=debug,
         )
         self._selfie_session = session
         self._lockout_command = "selfie"
@@ -704,6 +712,11 @@ class NMSBot(commands.Bot):
                 session,
                 SelfieConfig.PHOTO_MODE_SETTLE_SECONDS,
             ):
+                return "cancelled", None
+
+            if session.debug:
+                session.phase = "debug_positioning"
+                await session.cancel_event.wait()
                 return "cancelled", None
 
             session.phase = "positioning_camera"
@@ -1432,6 +1445,16 @@ class NMSBot(commands.Bot):
             )
 
     async def _dispatch_nms_command(self, ctx: commands.Context, name: str, args: list[str]):
+        if name == "selfie_debug":
+            if self._is_admin(ctx.author.name):
+                await self._start_selfie(
+                    ctx,
+                    args,
+                    requested_by=ctx.author.name,
+                    debug=True,
+                )
+            return
+
         if name == "selfie_lock":
             if self._is_admin(ctx.author.name):
                 await self._set_selfie_lock(ctx, args)
