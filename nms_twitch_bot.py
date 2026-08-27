@@ -294,8 +294,8 @@ def _build_selfie_caption(viewer, state):
     if details:
         lines.append(" • ".join(details))
 
-    suffix = f"\nWatch the journey live: https://www.twitch.tv/{Config.TWITCH_CHANNEL}"
-    body = "\n".join(lines)
+    suffix = f" • twitch.tv/{Config.TWITCH_CHANNEL}"
+    body = " ".join(lines)
     available = nms_bluesky.BLUESKY_MAX_TEXT - len(suffix)
     if len(body) > available:
         body = body[:max(0, available - 1)].rstrip() + "…"

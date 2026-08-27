@@ -253,6 +253,17 @@ def _link_facets(text: str):
                 "uri": match.group(0),
             }],
         })
+    for match in re.finditer(r"(?<!://)(?<!www\.)\btwitch\.tv/[A-Za-z0-9_]{1,25}\b", text):
+        facets.append({
+            "index": {
+                "byteStart": len(text[:match.start()].encode("utf-8")),
+                "byteEnd": len(text[:match.end()].encode("utf-8")),
+            },
+            "features": [{
+                "$type": "app.bsky.richtext.facet#link",
+                "uri": f"https://www.{match.group(0)}",
+            }],
+        })
     for match in re.finditer(r"(?<=Twitch viewer )@([A-Za-z0-9_]{1,25})", text):
         facets.append({
             "index": {
