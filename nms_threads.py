@@ -210,7 +210,7 @@ def _wait_until_ready(container_id: str, access_token: str) -> None:
     raise ThreadsError("Threads media processing timed out")
 
 
-def post_media(media_url: str, media_type: str, text: str, topic_tag: str = "NoMansSky") -> str:
+def post_media(media_url: str, media_type: str, text: str, topic_tag: str = "No Man's Sky") -> str:
     """Publish one Bluesky-hosted image or video to Threads."""
     media_type = str(media_type or "").upper()
     if media_type not in {"IMAGE", "VIDEO"}:

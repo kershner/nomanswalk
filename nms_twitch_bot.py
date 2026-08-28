@@ -277,12 +277,7 @@ def _build_selfie_caption(viewer, state):
     galaxy = get_galaxy_name(galaxy_number) if galaxy_number else ""
 
     planet_name = planet.get("name") or "an unknown world"
-    lines = [
-        f"Greetings from {planet_name}!",
-        f"Selfie requested by Twitch viewer @{viewer}.",
-    ]
-
-    details = []
+    details = [f"Selfie requested by Twitch viewer twitch.tv/{viewer}"]
     if galaxy:
         details.append(f"Galaxy: {galaxy}")
     for label, key in (
@@ -292,11 +287,9 @@ def _build_selfie_caption(viewer, state):
     ):
         if planet.get(key):
             details.append(f"{label}: {planet[key]}")
-    if details:
-        lines.append(" • ".join(details))
 
-    suffix = f" • twitch.tv/{Config.TWITCH_CHANNEL}"
-    body = " ".join(lines)
+    suffix = f" • 🔴twitch.tv/{Config.TWITCH_CHANNEL}"
+    body = f"Greetings from {planet_name}!\n\n{' • '.join(details)}"
     available = nms_bluesky.BLUESKY_MAX_TEXT - len(suffix)
     if len(body) > available:
         body = body[:max(0, available - 1)].rstrip() + "…"
