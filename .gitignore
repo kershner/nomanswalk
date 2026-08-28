@@ -3,6 +3,8 @@ nms_state.json
 utilities/
 venv/
 oauth_tokens.json
+threads_credentials.json
+threads_tokens.json
 parameters.json
 misc/
 MODS/

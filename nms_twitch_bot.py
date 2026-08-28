@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from twitchio.ext import commands
 from typing import Optional
 import nms_bluesky
+import nms_threads
 import subprocess
 import psutil
 import aiohttp
@@ -360,6 +361,20 @@ class NMSBot(commands.Bot):
                 log("Bluesky logged in.")
             except Exception as e:
                 log(f"Bluesky login failed: {e}")
+
+    async def _cross_post_to_threads(self, media: nms_bluesky.PublishedMedia) -> None:
+        if not nms_threads.is_configured():
+            return
+        try:
+            permalink = await asyncio.to_thread(
+                nms_threads.post_media,
+                media.blob_url,
+                media.media_type,
+                media.text,
+            )
+            log(f"Posted to Threads: {permalink}")
+        except Exception as e:
+            log(f"Threads cross-post failed; Bluesky post remains published: {e}")
 
     def _parse_command(self, content: str) -> tuple[str, list[str]]:
         if not content:
@@ -776,19 +791,20 @@ class NMSBot(commands.Bot):
                 if self._bsky is None:
                     self._bsky = await asyncio.to_thread(nms_bluesky.login)
                     log("Bluesky logged in for selfie upload.")
-                post_url = await asyncio.to_thread(
+                published = await asyncio.to_thread(
                     nms_bluesky.post_selfie,
                     self._bsky,
                     screenshot_path,
                     caption,
                 )
+            await self._cross_post_to_threads(published)
             if session.limits_enabled:
                 await asyncio.to_thread(
                     record_daily_selfie_upload,
                     session.requested_by,
                     session.planet_key,
                 )
-            return "uploaded", post_url
+            return "uploaded", published.post_url
         except Exception as e:
             log(f"Selfie upload failed for @{session.requested_by}: {e}")
             return "upload_failed", None
@@ -1101,8 +1117,13 @@ class NMSBot(commands.Bot):
                 post_index = Config.BLUESKY_POST_TIMES.index(next_post.strftime("%H:%M"))
                 status_text = get_location_text() if post_index == 0 else get_info_text(countdown=self._format_countdown())
                 async with self._bsky_post_lock:
-                    await asyncio.to_thread(nms_bluesky.post_clip, self._bsky, status_text=status_text)
+                    published = await asyncio.to_thread(
+                        nms_bluesky.post_clip,
+                        self._bsky,
+                        status_text=status_text,
+                    )
                 log("Bluesky scheduler: post_clip() complete.")
+                await self._cross_post_to_threads(published)
             except Exception as e:
                 log(f"Bluesky scheduler failed: {e}")
 

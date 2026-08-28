@@ -10,9 +10,11 @@ Standalone (creates a clip and posts it autonomously):
 
 from atproto import Client
 from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass
 from io import BytesIO
 from PIL import Image, ImageOps
 from utils import get_info_text
+from urllib.parse import quote
 import requests
 import httpx
 import logging
@@ -27,6 +29,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 log = logging.getLogger(__name__)
 
 TWITCH_CLIP_URL = "https://api.twitch.tv/helix/clips"
+
+
+@dataclass(frozen=True)
+class PublishedMedia:
+    post_url: str
+    blob_url: str
+    media_type: str
+    text: str
 
 TAGS_POOL = [
     "exploration", "automation", "chill", "cozy", "SciFi", "Ambient", "SpaceGame",
@@ -283,6 +293,28 @@ def _profile_url(bsky_client: Client):
     return f"https://bsky.app/profile/{actor}"
 
 
+def _blob_cid(blob) -> str:
+    cid = getattr(getattr(blob, "ref", None), "link", None)
+    if not cid:
+        raise RuntimeError("Bluesky upload did not return a blob CID")
+    return str(cid)
+
+
+def _blob_url(bsky_client: Client, blob) -> str:
+    did = quote(str(bsky_client.me.did), safe="")
+    cid = quote(_blob_cid(blob), safe="")
+    return f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}"
+
+
+def _post_url(bsky_client: Client, result) -> str:
+    uri = getattr(result, "uri", None)
+    if uri is None and isinstance(result, dict):
+        uri = result.get("uri")
+    if uri and "/app.bsky.feed.post/" in uri:
+        return f"{_profile_url(bsky_client)}/post/{uri.rsplit('/', 1)[-1]}"
+    return _profile_url(bsky_client)
+
+
 def post_selfie(bsky_client: Client, image_path: str, caption: str):
     """Upload a local screenshot as a Bluesky image post."""
     if bsky_client is None:
@@ -312,13 +344,12 @@ def post_selfie(bsky_client: Client, image_path: str, caption: str):
         data={"repo": bsky_client.me.did, "collection": "app.bsky.feed.post", "record": record}
     )
     log.info(f"Posted selfie to Bluesky: {text}")
-    uri = getattr(result, "uri", None)
-    if uri is None and isinstance(result, dict):
-        uri = result.get("uri")
-    if uri and "/app.bsky.feed.post/" in uri:
-        rkey = uri.rsplit("/", 1)[-1]
-        return f"{_profile_url(bsky_client)}/post/{rkey}"
-    return _profile_url(bsky_client)
+    return PublishedMedia(
+        post_url=_post_url(bsky_client, result),
+        blob_url=_blob_url(bsky_client, blob),
+        media_type="IMAGE",
+        text=text,
+    )
 
 
 def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str = "", status_text: str = ""):
@@ -373,10 +404,16 @@ def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str
             },
         }
 
-        bsky_client.com.atproto.repo.create_record(
+        result = bsky_client.com.atproto.repo.create_record(
             data={"repo": bsky_client.me.did, "collection": "app.bsky.feed.post", "record": record}
         )
         log.info(f"Posted to Bluesky: {status_text[:80]}")
+        return PublishedMedia(
+            post_url=_post_url(bsky_client, result),
+            blob_url=_blob_url(bsky_client, blob),
+            media_type="VIDEO",
+            text=status_text,
+        )
 
     finally:
         if os.path.exists(video_path):
