@@ -1,8 +1,11 @@
 # Command-state names corresponding to nmspy's EnvironmentLocation values.
+# nmspy's internal enum calls value 1 "Default", while the game-facing
+# cGcEnvironmentLocation enum calls the same value "Space".  It covers open
+# space in both a ship and on-foot EVA; it is not the unknown/default fallback.
 # The unset None_ value (0) intentionally resolves to UNKNOWN.
 COMMAND_STATE_BY_LOCATION_VALUE = {
     0: "UNKNOWN",
-    1: "Default",
+    1: "Space",
     2: "SpaceStation",
     3: "PlanetOnFoot",
     4: "PlanetInShip",
@@ -17,6 +20,10 @@ COMMAND_STATE_BY_LOCATION_VALUE = {
     13: "InSpaceObject",
     14: "Nexus",
     15: "Anomaly",
+}
+
+COMMAND_STATE_BY_LOCATION_NAME = {
+    "Default": "Space",
 }
 
 ON_PLANET_STATES = {
@@ -55,6 +62,13 @@ IN_COCKPIT_BLOCKED_COMMANDS = [
     "selfie",
 ]
 
+# EnvironmentLocation cannot distinguish a ship in open space from on-foot
+# EVA. Keep the conservative cockpit restrictions there, except that jet must
+# remain usable for EVA recovery.
+SPACE_BLOCKED_COMMANDS = [
+    command for command in IN_COCKPIT_BLOCKED_COMMANDS if command != "jet"
+]
+
 # Add commands here to block them in every planetary environment.
 ON_PLANET_BLOCKED_COMMANDS = [
 ]
@@ -72,8 +86,8 @@ UNKNOWN_BLOCKED_COMMANDS = [
 
 
 BLOCKED_COMMANDS_BY_STATE = {
-    "Default": [
-        *IN_COCKPIT_BLOCKED_COMMANDS,
+    "Space": [
+        *SPACE_BLOCKED_COMMANDS,
         *OFF_PLANET_BLOCKED_COMMANDS,
     ],
     "SpaceStation": [
@@ -164,6 +178,7 @@ def resolve_command_state(data, fallback="UNKNOWN"):
         location = environment.get("location")
     if location == "None_":
         return "UNKNOWN"
+    location = COMMAND_STATE_BY_LOCATION_NAME.get(location, location)
     if location in BLOCKED_COMMANDS_BY_STATE:
         return location
 
@@ -175,9 +190,11 @@ def resolve_command_state(data, fallback="UNKNOWN"):
     except (TypeError, ValueError):
         location = None
 
+    fallback = COMMAND_STATE_BY_LOCATION_NAME.get(fallback, fallback)
     return location or (fallback if fallback in BLOCKED_COMMANDS_BY_STATE else "UNKNOWN")
 
 
 def blocked_commands_for_state(state):
     """Return the configured list, failing closed for an unrecognized state."""
+    state = COMMAND_STATE_BY_LOCATION_NAME.get(state, state)
     return BLOCKED_COMMANDS_BY_STATE.get(state, BLOCKED_COMMANDS_BY_STATE["UNKNOWN"])
