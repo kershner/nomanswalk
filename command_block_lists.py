@@ -63,10 +63,11 @@ IN_COCKPIT_BLOCKED_COMMANDS = [
 ]
 
 # EnvironmentLocation cannot distinguish a ship in open space from on-foot
-# EVA. Keep the conservative cockpit restrictions there, except that jet must
-# remain usable for EVA recovery.
+# EVA. Keep the conservative cockpit restrictions there, except that jet and
+# walk must remain usable for EVA recovery.
 SPACE_BLOCKED_COMMANDS = [
-    command for command in IN_COCKPIT_BLOCKED_COMMANDS if command != "jet"
+    command for command in IN_COCKPIT_BLOCKED_COMMANDS
+    if command not in {"jet", "walk"}
 ]
 
 # Add commands here to block them in every planetary environment.

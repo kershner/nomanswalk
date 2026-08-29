@@ -1,5 +1,5 @@
 # /// script
-# dependencies = ["nmspy==170671.2", "pymhf[gui]==0.2.3"]
+# dependencies = ["nmspy==170671.5", "pymhf[gui]==0.2.4"]
 #
 # [tool.pymhf]
 # exe = "NMS.exe"
@@ -25,7 +25,7 @@ from typing import Annotated
 
 from pymhf import Mod
 from pymhf.core.hooking import Structure, function_hook, on_key_pressed
-from pymhf.utils.partial_struct import Field, partial_struct
+from pymhf.core.structs import Field, partial_struct
 
 import nmspy.data.types as nms
 import nmspy.data.basic_types as basic
