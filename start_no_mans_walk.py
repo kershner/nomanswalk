@@ -5,7 +5,6 @@ import subprocess
 import pyautogui
 import argparse
 import win32gui
-import ctypes
 import time
 import glob
 import sys
@@ -67,39 +66,6 @@ def _obs_log_has(log_path, *fragments):
         return False
 
 
-def _obs_is_running_as_admin():
-    """Return whether the current OBS session reports elevated privileges."""
-    obs_log = _obs_log_since(0)
-    return bool(obs_log and _obs_log_has(
-        obs_log, "Running as administrator: true"
-    ))
-
-
-def _launch_obs_as_admin(obs_args):
-    """Launch OBS elevated, inheriting an already-elevated interactive session."""
-    if ctypes.windll.shell32.IsUserAnAdmin():
-        log("Launcher is elevated; starting OBS in the current interactive session.")
-        subprocess.Popen(
-            obs_args,
-            cwd=os.path.dirname(obs_args[0]),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return
-
-    log("Launcher is not elevated; requesting administrator approval for OBS...")
-    result = ctypes.windll.shell32.ShellExecuteW(
-        None,
-        "runas",
-        obs_args[0],
-        subprocess.list2cmdline(obs_args[1:]),
-        os.path.dirname(obs_args[0]),
-        1,
-    )
-    if result <= 32:
-        raise OSError(f"Windows refused the elevated OBS launch (code {result}).")
-
-
 def _wait_for_obs_ready(ws, timeout=30, interval=2):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -128,20 +94,8 @@ def _start_stream_with_retry(ws, retries=5, interval=2):
 def start_obs():
     """Launch OBS and wait for the stream to be live."""
     if is_process_running("obs64.exe"):
-        if _obs_is_running_as_admin():
-            log("OBS is already running as administrator.")
-            return
-
-        log("OBS is running without administrator privileges; restarting it elevated...")
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "obs64.exe"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(3)
-        if is_process_running("obs64.exe"):
-            log("ERROR: Could not stop the existing non-admin OBS process.")
-            return
+        log("OBS is already running.")
+        return
 
     obs_args = [OBS_EXE, "--multi", "--minimize-to-tray",
                 "--disable-missing-files-check", "--disable-updater"]
@@ -149,23 +103,11 @@ def start_obs():
     for attempt in range(1, OBS_MAX_RETRIES + 1):
         log(f"Starting OBS (attempt {attempt}/{OBS_MAX_RETRIES})...")
         launch_time = time.time()
-        try:
-            _launch_obs_as_admin(obs_args)
-        except OSError as e:
-            log(f"ERROR: Could not start OBS as administrator: {e}")
-            return
+        subprocess.Popen(obs_args, cwd=os.path.dirname(OBS_EXE),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         time.sleep(OBS_INIT_WAIT)
         obs_log = _obs_log_since(launch_time)
-
-        if obs_log and _obs_log_has(obs_log, "Running as administrator: false"):
-            log("ERROR: OBS launched without administrator privileges.")
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "obs64.exe"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            return
 
         if obs_log and _obs_log_has(obs_log, "nvenc not supported",
                                     "encoder type 'obs_nvenc_h264_tex' not available",
