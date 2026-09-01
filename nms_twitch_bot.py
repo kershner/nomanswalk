@@ -580,8 +580,7 @@ class NMSBot(commands.Bot):
 
         state = NMSState.get()
         if not is_command_allowed("selfie", state):
-            command_state = get_command_state(fallback_state=state)
-            await self._say(ctx, f"!selfie is not available in the {command_state} state.")
+            await self._say(ctx, "!selfie is not available in the current state.")
             return
 
         if is_planet_loading():
@@ -1133,7 +1132,7 @@ class NMSBot(commands.Bot):
         duration = Config.TELEPORT_VOTING_DURATION if is_teleport else Config.VOTING_DURATION
 
         if is_teleport and not is_command_allowed(name):
-            await self._say(ctx, "!teleport is only available while the Walker is on a planet.")
+            await self._say(ctx, "!teleport is not available in the current state.")
             return
 
         if vote.active:
@@ -1195,7 +1194,7 @@ class NMSBot(commands.Bot):
 
                 if passed:
                     if is_teleport and not is_command_allowed(name):
-                        await self._say(ctx, "Teleport cancelled because the Walker is no longer on a planet.")
+                        await self._say(ctx, "!teleport is not available in the current state.")
                         return
 
                     passed_text = f"Destination: {teleport_text}" if is_teleport else help_text
@@ -1482,11 +1481,7 @@ class NMSBot(commands.Bot):
 
         state = NMSState.get()
         if not is_command_allowed(name, state):
-            if get_canonical_command_name(name) == "teleport":
-                await self._say(ctx, "!teleport is only available while the Walker is on a planet.")
-            else:
-                command_state = get_command_state(fallback_state=state)
-                await self._say(ctx, f"!{name} is not available in the {command_state} state.")
+            await self._say(ctx, f"!{name} is not available in the current state.")
             return
 
         if name == "teleport" and args:

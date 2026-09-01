@@ -1098,7 +1098,7 @@ def _write_teleport_request(planet: str | None, galaxy: int | None = None) -> No
 def teleport(args=None):
     """Teleport to a portal address in an optional galaxy, or randomly when omitted."""
     if not is_command_allowed("teleport"):
-        log("Teleport ignored: the player is not on a planet.")
+        log("Teleport ignored: the command is currently unavailable.")
         return
 
     planet, galaxy = _normalize_teleport_destination(args)

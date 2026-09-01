@@ -74,10 +74,14 @@ SPACE_BLOCKED_COMMANDS = [
 ON_PLANET_BLOCKED_COMMANDS = [
 ]
 
-# Restrictions shared by stations, space, freighters, and other non-planets.
-OFF_PLANET_BLOCKED_COMMANDS = [
+# Teleport is a recovery mechanism as well as normal travel, so location must
+# never prevent it. Loading/in-progress guards still prevent overlapping warps.
+LOCATION_INDEPENDENT_COMMANDS = {
     "teleport",
-]
+}
+
+# Restrictions shared by stations, space, freighters, and other non-planets.
+OFF_PLANET_BLOCKED_COMMANDS = []
 
 # Unknown includes the conservative cockpit baseline plus off-planet rules.
 UNKNOWN_BLOCKED_COMMANDS = [
@@ -198,4 +202,5 @@ def resolve_command_state(data, fallback="UNKNOWN"):
 def blocked_commands_for_state(state):
     """Return the configured list, failing closed for an unrecognized state."""
     state = COMMAND_STATE_BY_LOCATION_NAME.get(state, state)
-    return BLOCKED_COMMANDS_BY_STATE.get(state, BLOCKED_COMMANDS_BY_STATE["UNKNOWN"])
+    blocked = BLOCKED_COMMANDS_BY_STATE.get(state, BLOCKED_COMMANDS_BY_STATE["UNKNOWN"])
+    return [command for command in blocked if command not in LOCATION_INDEPENDENT_COMMANDS]

@@ -1,6 +1,10 @@
 import unittest
 
-from command_block_lists import blocked_commands_for_state, resolve_command_state
+from command_block_lists import (
+    BLOCKED_COMMANDS_BY_STATE,
+    blocked_commands_for_state,
+    resolve_command_state,
+)
 
 
 class CommandBlockListTests(unittest.TestCase):
@@ -27,7 +31,15 @@ class CommandBlockListTests(unittest.TestCase):
         blocked = blocked_commands_for_state("Space")
 
         self.assertIn("selfie", blocked)
-        self.assertIn("teleport", blocked)
+
+    def test_teleport_is_available_in_every_location(self):
+        for state in BLOCKED_COMMANDS_BY_STATE:
+            with self.subTest(state=state):
+                self.assertNotIn("teleport", blocked_commands_for_state(state))
+
+        # Unrecognized/transitional states fail over to UNKNOWN, where teleport
+        # must remain available as a recovery mechanism.
+        self.assertNotIn("teleport", blocked_commands_for_state("TRANSITIONING"))
 
     def test_unset_location_remains_unknown(self):
         data = {"environment": {"location_stable": "None_"}}
