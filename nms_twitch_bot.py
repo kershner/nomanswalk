@@ -483,7 +483,16 @@ class NMSBot(commands.Bot):
             return
 
         if self._lockout_command:
-            await self._say(ctx, f"!{self._lockout_command} is running; please wait.")
+            if (
+                self._lockout_command == "selfie"
+                and self._selfie_session is not None
+                and self._selfie_session.phase in {
+                    "capturing", "uploading", "cleaning_up", "complete"
+                }
+            ):
+                await self._say(ctx, "!selfie is finishing; please wait.")
+            else:
+                await self._say(ctx, f"!{self._lockout_command} is running; please wait.")
             return
 
         canonical_name = get_canonical_command_name(name)
@@ -641,10 +650,11 @@ class NMSBot(commands.Bot):
 
     async def _cancel_selfie(self, ctx):
         session = self._selfie_session
-        if session is None or session.phase in {
-            "capturing", "uploading", "cleaning_up", "complete"
-        }:
+        if session is None:
             await self._say(ctx, "There is no active selfie to cancel.")
+            return
+        if session.phase in {"capturing", "uploading", "cleaning_up", "complete"}:
+            await self._say(ctx, "The selfie is already finishing; please wait.")
             return
 
         username = (getattr(getattr(ctx, "author", None), "name", "") or "").strip().lower()
