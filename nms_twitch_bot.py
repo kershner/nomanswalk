@@ -5,7 +5,7 @@ from nms_bot import (
     enter_photo_mode, exit_photo_mode, get_canonical_command_name,
     get_command_state, get_current_planet_key, get_daily_selfie_uploads, get_movement_generation,
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
-    has_selfie_planet_upload, is_planet_loading, is_walking, left_click,
+    has_selfie_planet_upload, is_planet_loading, is_walking,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
     release_selfie_camera, set_runtime_game_state,
     start_selfie_gesture, start_state_poller, walk,
@@ -428,8 +428,6 @@ class NMSBot(commands.Bot):
             log("Startup sequence: beginning...")
             await self._say(channel, "No Man's Walk is online!")
 
-            await asyncio.to_thread(left_click)
-            await asyncio.sleep(0.3)
             await self._do_walk(channel, announce=False)
 
             await self._start_vote(channel, "teleport", [], starter=Config.TWITCH_CHANNEL)
