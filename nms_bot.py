@@ -508,6 +508,11 @@ def is_walking() -> bool:
 
 
 def start_state_poller():
+    log(
+        f"State poller paths: state_file={STATE_FILE} "
+        f"bot_module={os.path.abspath(__file__)} "
+        f"resolver_module={os.path.abspath(resolve_command_state.__code__.co_filename)}"
+    )
     t = threading.Thread(target=poll_state, daemon=True)
     t.start()
     log("State poller started")

@@ -1095,7 +1095,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.6-cosmos-state-layout"
+    __version__ = "1.7-cosmos-direct-environment"
 
     state = NMSModState()
 
@@ -1107,6 +1107,7 @@ class StateLogger(Mod):
     _last_good_player: dict = {}
     _last_good_movement: dict = {}
     _last_good_universe_address: dict = {}
+    _path_logged: bool = False
 
     @property
     @STRING("Current State:")
@@ -1129,6 +1130,15 @@ class StateLogger(Mod):
         self._poll_interval = max(1.0, float(value))
 
     def _write_now(self):
+        if not self._path_logged:
+            _slog.info(
+                "StateLogger paths version=%s module=%s state_file=%s",
+                self.__version__,
+                os.path.abspath(__file__),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "nms_state.json"),
+            )
+            self._path_logged = True
+
         terrain_idx = _find_standing_planet(self._planet_ptrs)
         ga = _gather_universe_address()
         ga_raw_idx = ga.get("planet_index_raw", -1)
@@ -1212,6 +1222,37 @@ class StateLogger(Mod):
         except Exception:
             _slog.warning("_cache_planet source=%s failed: %s", source, traceback.format_exc())
 
+    @staticmethod
+    def _capture_environment(this):
+        """Retain the live environment pointer supplied by the game itself.
+
+        NMSpy's gameData.player_environment property depends on its application
+        pointer having been populated before this mod polls it.  On a clean
+        Cosmos launch that chain can remain unavailable even though
+        cGcPlayerEnvironment is actively updating.  The callback's ``this``
+        pointer is authoritative and survives that initialization ordering.
+        """
+        global _live_env_ptr, _live_env_addr, _live_env_update_count
+        try:
+            env_ptr = ctypes.cast(this, ctypes.POINTER(nms.cGcPlayerEnvironment))
+            env_addr = ctypes.addressof(env_ptr.contents)
+            if env_addr:
+                _live_env_ptr = env_ptr
+                _live_env_addr = env_addr
+                _live_env_update_count += 1
+        except Exception:
+            pass
+
+    @nms.cGcPlayerEnvironment.Update.before
+    def on_player_environment_update(self, this, lf_time_step):
+        self._capture_environment(this)
+
+    @nms.cGcPlayerEnvironment.IsOnPlanet.before
+    def on_player_environment_is_on_planet(self, this):
+        # IsOnPlanet is used as a second acquisition path because it continues
+        # to be called in several states where Environment::Update may pause.
+        self._capture_environment(this)
+
     @manual_hook(
         "StateLogger.CosmosCheckFallenThroughFloor",
         pattern=(
@@ -1258,6 +1299,7 @@ class StateLogger(Mod):
         self._last_good_player = {}
         self._last_good_movement = {}
         self._last_good_universe_address = {}
+        self._path_logged = False
 
     @nms.cGcPlanet.SetupRegionMap.after
     def on_planet_setup(self, this: ctypes._Pointer[nms.cGcPlanet]):

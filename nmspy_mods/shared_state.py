@@ -124,5 +124,8 @@ def _validate_address(ga) -> bool:
 
 def _write_state(payload: dict):
     payload["timestamp"] = time.time()
-    with open(os.path.join(_base_dir, "nms_state.json"), "w", encoding="utf-8") as f:
+    state_file = os.path.join(_base_dir, "nms_state.json")
+    temp_file = f"{state_file}.tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    os.replace(temp_file, state_file)
