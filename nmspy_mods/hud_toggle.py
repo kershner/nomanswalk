@@ -29,9 +29,14 @@ from nmspy.common import gameData
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_toggle.log")
 
-_STRUCT_SIZE = 0x3AB0
-_APP_DATA_SIZE = 0x92AB10
-_HUD_HIDDEN_OFFSET = 0x3A8C
+_STRUCT_SIZE = 0x6D80
+# Cosmos cGcApplication::Data size.
+_APP_DATA_SIZE = 0x94E850
+# Cosmos game code passes this embedded object to the user-settings save/apply
+# routines. It does not depend on the contents of the user's settings file.
+_USER_SETTINGS_OFFSET = 0x307B50
+# Cosmos reflection metadata registers cGcUserSettingsData::HUDHidden here.
+_HUD_HIDDEN_OFFSET = 0x6D60
 
 
 def _build_file_logger() -> logging.Logger:
@@ -130,13 +135,23 @@ def _looks_like_settings(addr: int) -> bool:
 
 
 def _find_settings(mpdata_addr: int) -> list[int]:
-    hits = []
+    raw_hits = []
 
     for off in range(0, _APP_DATA_SIZE - _STRUCT_SIZE, 0x10):
         addr = mpdata_addr + off
 
         if _looks_like_settings(addr):
+            raw_hits.append(addr)
+
+    # The structure begins with a long run of dynamic arrays, so shifted 0x10
+    # windows can all satisfy the prefix check. Each consecutive run represents
+    # one settings object; its first address is the actual structure base.
+    hits = []
+    previous = None
+    for addr in raw_hits:
+        if previous is None or addr != previous + 0x10:
             hits.append(addr)
+        previous = addr
 
     return hits
 
@@ -165,22 +180,24 @@ class HUDToggle(Mod):
                 return False
 
             mpdata_addr = ctypes.addressof(app.mpData.contents)
-            _flog.info("mpData=0x%X; scanning for settings", mpdata_addr)
+            settings_addr = mpdata_addr + _USER_SETTINGS_OFFSET
+            _flog.info(
+                "mpData=0x%X; active user settings=0x%X",
+                mpdata_addr,
+                settings_addr,
+            )
 
-            hits = _find_settings(mpdata_addr)
-
-            if not hits:
-                _flog.error("no cGcUserSettingsData candidates found")
+            hud_value = _u8(settings_addr + _HUD_HIDDEN_OFFSET)
+            if hud_value not in (0, 1):
+                _flog.error(
+                    "HUDHidden sanity check failed at 0x%X: %s",
+                    settings_addr + _HUD_HIDDEN_OFFSET,
+                    hud_value,
+                )
                 return False
 
-            self._settings_addrs = hits
-            self._hud_hidden = bool(_u8(hits[0] + _HUD_HIDDEN_OFFSET))
-
-            _flog.info(
-                "found %s candidate(s): %s",
-                len(hits),
-                ", ".join(f"0x{x:X}" for x in hits),
-            )
+            self._settings_addrs = [settings_addr]
+            self._hud_hidden = bool(hud_value)
             _flog.info("current HUDHidden=%s", self._hud_hidden)
 
             return True

@@ -20,15 +20,17 @@ import math
 import time
 import traceback
 
-from pymhf import Mod
+from pymhf import FUNCDEF, Mod
+from pymhf.core.hooking import Structure, manual_hook, static_function_hook
 from pymhf.gui import FLOAT
 from pymhf.gui.decorators import STRING
 
+import nmspy.data.basic_types as basic
+import nmspy.data.exported_types as nmse
 import nmspy.data.types as nms
 from nmspy.data.enums import EnvironmentLocation
 from nmspy.decorators import on_state_change, on_fully_booted
 from nmspy.common import gameData
-from nmspy.engine import GetNodeAbsoluteTransMatrix
 
 from shared_state import (
     NMSModState,
@@ -43,6 +45,14 @@ from shared_state import (
 _slog = _make_logger("StateDetector", "nms_state_logger.log")
 
 DEFAULT_POLL_INTERVAL = 5.0
+# Cosmos inserted 0xE0 bytes at the front of cGcPlanetData.  cGcPlanet's
+# mPlanetData member is still nominally at +0x60, so treating +0x140 as the
+# start of the pre-Cosmos layout makes every nested field line up again.
+_COSMOS_PLANET_DATA_OFFSET = 0x140
+_COSMOS_PLANET_GENERATION_INPUT_OFFSET = 0x3B40
+_COSMOS_PLANET_NAME_OFFSET = 0x3AAE
+_COSMOS_ENV_LOCATION_OFFSET = 0x478
+_COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x484
 
 NON_PLANET_LOCATIONS = {
     EnvironmentLocation.Enum.SpaceStation,
@@ -77,6 +87,19 @@ _live_env_update_count = 0
 _live_game_state_ptr = None
 _live_game_state_addr = 0
 _live_game_state_update_count = 0
+
+
+class _EngineCosmos(Structure):
+    @static_function_hook(
+        "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
+        "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
+    )
+    @staticmethod
+    def GetNodePhysRelMatrix(
+        result: ctypes._Pointer[basic.cTkPhysRelMat34],
+        node: ctypes.c_uint32,
+    ):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +412,10 @@ def _get_live_player():
     except Exception:
         pass
 
-    return None
+    try:
+        return gameData.player
+    except Exception:
+        return None
 
 
 def _get_live_environment():
@@ -451,30 +477,48 @@ def _read_player_position_from_environment(env=None):
 
 
 def _read_player_position_from_live_player():
+    # Cosmos returns the physical-relative transform through an explicit result
+    # pointer.  Use the player's root node and combine both halves of cTkBigPos
+    # so movement/stuck detection receives real world coordinates.
     try:
         player = _get_live_player()
-
         if player is None:
             return None
 
-        mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
-
-        if not _matrix_looks_valid(mat):
+        node = int(player.mRootNode.lookupInt) & 0xFFFFFFFF
+        if node in (0, 0xFFFFFFFF):
             return None
 
-        return _round_pos(mat.pos)
+        matrix = basic.cTkPhysRelMat34()
+        _EngineCosmos.GetNodePhysRelMatrix(
+            ctypes.byref(matrix),
+            ctypes.c_uint32(node),
+        )
+        pos = matrix.pos
+        values = (
+            float(pos.local.x) + float(pos.offset.x),
+            float(pos.local.y) + float(pos.offset.y),
+            float(pos.local.z) + float(pos.offset.z),
+        )
+        if not all(_valid_float(value) for value in values):
+            return None
 
+        return {
+            "x": round(values[0], 3),
+            "y": round(values[1], 3),
+            "z": round(values[2], 3),
+        }
     except Exception:
         return None
 
 
 def _read_player_position_from_sim():
-    pos = _read_player_position_from_environment()
+    pos = _read_player_position_from_live_player()
 
     if pos is not None:
         return pos
 
-    return _read_player_position_from_live_player()
+    return _read_player_position_from_environment()
 
 
 def _state_from_location(loc):
@@ -721,9 +765,12 @@ def _gather_environment_data(env=None):
 
         loc_val = None
         stable_val = None
+        env_address = ctypes.addressof(env)
 
         try:
-            loc_val = _read_enum32(env.meLocation)
+            loc_val = ctypes.c_uint32.from_address(
+                env_address + _COSMOS_ENV_LOCATION_OFFSET
+            ).value
             result["location_raw"] = loc_val
             name = _enum_name(EnvironmentLocation.Enum, loc_val)
 
@@ -734,7 +781,9 @@ def _gather_environment_data(env=None):
             pass
 
         try:
-            stable_val = _read_enum32(env.meLocationStable)
+            stable_val = ctypes.c_uint32.from_address(
+                env_address + _COSMOS_ENV_LOCATION_STABLE_OFFSET
+            ).value
             result["location_stable_raw"] = stable_val
             name = _enum_name(EnvironmentLocation.Enum, stable_val)
 
@@ -774,18 +823,51 @@ def _gather_environment_data(env=None):
         return {}
 
 
+def _read_planet_name(planet_ptr):
+    try:
+        if not planet_ptr:
+            return ""
+
+        address = ctypes.cast(planet_ptr, ctypes.c_void_p).value
+        if not address:
+            return ""
+
+        raw = ctypes.string_at(address + _COSMOS_PLANET_NAME_OFFSET, 0x80)
+        name = raw.split(b"\0", 1)[0].decode("utf-8", errors="strict").strip()
+        if name and name.isprintable():
+            return name
+    except Exception:
+        pass
+
+    try:
+        name = _str(planet_ptr.contents.mPlanetData.Name)
+        return name if name and name.isprintable() else ""
+    except Exception:
+        return ""
+
+
+def _planet_struct_at(planet_ptr, offset, struct_type):
+    address = ctypes.cast(planet_ptr, ctypes.c_void_p).value
+    if not address:
+        raise ValueError("null planet pointer")
+    return ctypes.cast(address + offset, ctypes.POINTER(struct_type)).contents
+
+
 def _gather_planet_data(planet_ptr):
     try:
         if not planet_ptr:
             return {}
 
-        planet = planet_ptr.contents
-        pd = planet.mPlanetData
-        pgid = planet.mPlanetGenerationInputData
+        pd = _planet_struct_at(planet_ptr, _COSMOS_PLANET_DATA_OFFSET, nmse.cGcPlanetData)
+        pgid = _planet_struct_at(
+            planet_ptr,
+            _COSMOS_PLANET_GENERATION_INPUT_OFFSET,
+            nmse.cGcPlanetGenerationInputData,
+        )
         info = pd.PlanetInfo
         weather_data = pd.Weather
         hazard = pd.Hazard
-        name = _str(pd.Name)
+        name = _read_planet_name(planet_ptr)
 
         if not name or not name.isprintable():
             return {}
@@ -858,7 +940,11 @@ def _gather_solar_system_data(planet_ptr):
         if not planet_ptr:
             return {}
 
-        pgid = planet_ptr.contents.mPlanetGenerationInputData
+        pgid = _planet_struct_at(
+            planet_ptr,
+            _COSMOS_PLANET_GENERATION_INPUT_OFFSET,
+            nmse.cGcPlanetGenerationInputData,
+        )
 
         return {
             "star_type": _enum_name(pgid.Star.__class__, _read_enum32(pgid.Star)),
@@ -875,7 +961,7 @@ def _find_standing_planet(planet_ptrs: dict) -> int:
 
     for idx, ptr in planet_ptrs.items():
         try:
-            name = _str(ptr.contents.mPlanetData.Name)
+            name = _read_planet_name(ptr)
 
             if not name:
                 continue
@@ -947,7 +1033,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.4-location-context"
+    __version__ = "1.5-cosmos-position"
 
     state = NMSModState()
 
@@ -1028,7 +1114,7 @@ class StateLogger(Mod):
                 return
 
             idx = int(this.contents.miPlanetIndex)
-            name = _str(this.contents.mPlanetData.Name)
+            name = _read_planet_name(this)
 
             if source == "Construct":
                 if idx == 0:
@@ -1038,7 +1124,7 @@ class StateLogger(Mod):
 
                 if existing is not None:
                     try:
-                        if _str(existing.contents.mPlanetData.Name):
+                        if _read_planet_name(existing):
                             return
                     except Exception:
                         pass
@@ -1048,84 +1134,22 @@ class StateLogger(Mod):
         except Exception:
             _slog.warning("_cache_planet source=%s failed: %s", source, traceback.format_exc())
 
-    @nms.cGcGameState.Update.before
-    def on_game_state_update(self, this, lfTimeStep):
-        global _live_game_state_ptr, _live_game_state_addr, _live_game_state_update_count
-
-        try:
-            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
-
-            if not addr:
-                return
-
-            _live_game_state_ptr = this
-            _live_game_state_addr = addr
-            _live_game_state_update_count += 1
-
-        except Exception:
-            pass
-
-    @nms.cGcPlayerEnvironment.Update.before
-    def on_player_environment_update(self, this, lfTimeStep):
-        global _live_env_ptr, _live_env_addr, _live_env_update_count
-
-        try:
-            env = this.contents
-            mat = env.mPlayerTM
-
-            if not _matrix_looks_valid(mat):
-                return
-
-            idx = int(env.miNearestPlanetIndex)
-
-            if not (-1 <= idx <= 5):
-                return
-
-            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
-
-            if not addr:
-                return
-
-            _live_env_ptr = this
-            _live_env_addr = addr
-            _live_env_update_count += 1
-
-        except Exception:
-            pass
-
-    @nms.cGcPlayer.Update.before
-    def on_player_update(self, this, lfStep):
+    @manual_hook(
+        "StateLogger.CosmosCheckFallenThroughFloor",
+        pattern=(
+            "40 55 41 57 48 8D AC 24 ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? "
+            "4C 8B F9 83 B8 ? ? ? ? ? 0F 85"
+        ),
+        func_def=FUNCDEF(None, [ctypes.c_void_p]),
+        detour_time="before",
+    )
+    def on_player_floor_check(self, this):
         global _live_player_ptr, _live_player_addr, _live_player_update_count
-
         try:
-            player = this.contents
-            mat = GetNodeAbsoluteTransMatrix(player.mRootNode)
-
-            if not _matrix_looks_valid(mat):
-                return
-
-            addr = ctypes.cast(this, ctypes.c_void_p).value or 0
-
-            if not addr:
-                return
-
-            if _live_player_addr and addr != _live_player_addr:
-                existing = _get_live_player()
-
-                if existing is not None:
-                    try:
-                        existing_mat = GetNodeAbsoluteTransMatrix(existing.mRootNode)
-
-                        if _matrix_looks_valid(existing_mat):
-                            return
-
-                    except Exception:
-                        pass
-
-            _live_player_ptr = this
-            _live_player_addr = addr
+            player_ptr = ctypes.cast(this, ctypes.POINTER(nms.cGcPlayer))
+            _live_player_ptr = player_ptr
+            _live_player_addr = ctypes.addressof(player_ptr.contents)
             _live_player_update_count += 1
-
         except Exception:
             pass
 
@@ -1176,22 +1200,25 @@ class StateLogger(Mod):
     def on_main_loop(self, this):
         try:
             pos = _read_player_position_from_sim()
-
-            if pos is not None:
-                self._last_env_data["player_position"] = pos
-
             pe = _get_live_environment()
 
             if pe is not None:
                 env_data = _gather_environment_data(pe)
 
-                if "player_position" in self._last_env_data and "player_position" not in env_data:
+                # The Cosmos cGcPlayerEnvironment layout can yield an orientation
+                # vector at the historical mPlayerTM offset.  Always prefer the
+                # verified root-node transform when it is available.
+                if pos is not None:
+                    env_data["player_position"] = pos
+                elif "player_position" in self._last_env_data and "player_position" not in env_data:
                     env_data["player_position"] = self._last_env_data["player_position"]
 
                 self._last_env_data = env_data
 
                 try:
-                    loc_stable = _read_enum32(pe.meLocationStable)
+                    loc_stable = ctypes.c_uint32.from_address(
+                        ctypes.addressof(pe) + _COSMOS_ENV_LOCATION_STABLE_OFFSET
+                    ).value
 
                     if loc_stable != self.state.last_location_stable:
                         self.state.last_location_stable = loc_stable
@@ -1201,6 +1228,9 @@ class StateLogger(Mod):
 
                 except Exception:
                     pass
+
+            elif pos is not None:
+                self._last_env_data["player_position"] = pos
 
         except Exception:
             pass

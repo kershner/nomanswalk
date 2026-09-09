@@ -597,16 +597,6 @@ class Teleporter(Mod):
             pending["reality"],
         )
 
-    @nms.cGcGameState.Update.before
-    def on_game_state_update(self, this, lfTimeStep):
-        global _live_game_state_ptr, _live_game_state_update_count
-
-        try:
-            _live_game_state_ptr = this
-            _live_game_state_update_count += 1
-        except Exception:
-            pass
-
     @nms.cGcApplication.Update.after
     def on_main_loop(self, this):
         _flush_deferred_teleport(self.state)

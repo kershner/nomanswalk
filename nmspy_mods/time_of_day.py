@@ -13,6 +13,7 @@
 # ///
 
 import logging
+import math
 import traceback
 
 from pymhf import Mod
@@ -63,13 +64,20 @@ class TimeOfDay(Mod):
             self._last_status = status
             set_mod_status("time", status)
 
-    @nms.cGcSky.Update.after
-    def on_sky_update(self, this, lfTimeStep) -> None:
+    @nms.cGcApplication.Update.after
+    def on_main_loop(self, this) -> None:
         self._sync_status()
 
     def _set_time(self, value: float, source: str) -> None:
         try:
-            before = globals.GcDebugOptions.ForceTimeOfDay
+            before = float(globals.GcDebugOptions.ForceTimeOfDay)
+            if not math.isfinite(before) or not -1.01 <= before <= 1.01:
+                _flog.error(
+                    "[%s] refusing ForceTimeOfDay write: current value %r is not plausible",
+                    source,
+                    before,
+                )
+                return
             globals.GcDebugOptions.ForceTimeOfDay = float(value)
             after = globals.GcDebugOptions.ForceTimeOfDay
 

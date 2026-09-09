@@ -295,8 +295,8 @@ def main():
     log(f"Waiting {WAIT_FOR_MODE_SELECT}s...")
     time.sleep(WAIT_FOR_MODE_SELECT)
 
-    log("Sending quick_load key (F9)...")
-    send_key("f9", 0.1)
+    log("Sending quick_load key (F12)...")
+    send_key("f12", 0.1)
 
     log(f"Waiting {WAIT_FOR_GAME_LOAD}s for game load...")
     time.sleep(WAIT_FOR_GAME_LOAD)

@@ -26,11 +26,10 @@ import traceback
 from typing import Annotated
 
 from pymhf import Mod
-from pymhf.core.hooking import Structure, function_hook, on_key_pressed
+from pymhf.core.hooking import Structure, function_hook, on_key_pressed, static_function_hook
 
 import nmspy.data.basic_types as basic
 from nmspy.common import gameData
-from nmspy.engine import GetNodeAbsoluteTransMatrix
 
 from shared_state import _make_logger
 
@@ -71,25 +70,38 @@ class _BigPosMatrix34(ctypes.Structure):
     ]
 
 
-class _TkCamera(ctypes.Structure):
-    _fields_ = [
-        ("vtable", ctypes.c_void_p),
-        ("unknown", ctypes.c_byte * 8),
-        ("matrix", _BigPosMatrix34),
-    ]
-
-
 class _PhotoModeCameraBehaviour(Structure):
     @function_hook(
         "F3 0F 11 4C 24 ? 55 53 56 57 41 56 48 8D AC 24 ? ? ? ? "
-        "48 81 EC ? ? ? ? 44 0F 29 A4 24 ? ? ? ? 49 8B F8"
+        "48 81 EC ? ? ? ? 44 0F 29 9C 24 ? ? ? ? 49 8B F0"
     )
     def Update(
         self,
         this: "ctypes._Pointer[_PhotoModeCameraBehaviour]",
         lfTimeStep: Annotated[float, ctypes.c_float],
-        camera: ctypes.POINTER(_TkCamera),
+        camera: ctypes.POINTER(basic.cTkPhysRelMat34),
     ) -> None: ...
+
+
+class _EngineCosmos(Structure):
+    @static_function_hook(
+        "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
+        "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
+    )
+    @staticmethod
+    def GetNodePhysRelMatrix(
+        result: ctypes._Pointer[basic.cTkPhysRelMat34],
+        node: ctypes.c_uint32,
+    ) -> None: ...
+
+
+def _get_player_matrix(player):
+    matrix = basic.cTkPhysRelMat34()
+    _EngineCosmos.GetNodePhysRelMatrix(
+        ctypes.byref(matrix),
+        ctypes.c_uint32(int(player.mRootNode.lookupInt)),
+    )
+    return matrix
 
 
 def _atomic_json(path, payload):
@@ -150,6 +162,13 @@ def _subtract(a, b):
     return tuple(a[index] - b[index] for index in range(3))
 
 
+def _big_position_xyz(position):
+    return tuple(
+        local + offset
+        for local, offset in zip(_xyz(position.local), _xyz(position.offset))
+    )
+
+
 def _local(vector, basis):
     return [_dot(vector, axis) for axis in basis]
 
@@ -160,12 +179,12 @@ def _capture_pose(camera):
     if player is None:
         raise RuntimeError("player is unavailable")
 
-    player_matrix = GetNodeAbsoluteTransMatrix(player.mRootNode)
+    player_matrix = _get_player_matrix(player)
     basis = tuple(
         _normalise(_xyz(axis))
         for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
     )
-    camera_matrix = camera.contents.matrix
+    camera_matrix = camera.contents
     camera_position = tuple(
         local + offset
         for local, offset in zip(
@@ -173,7 +192,15 @@ def _capture_pose(camera):
             _xyz(camera_matrix.pos.offset),
         )
     )
-    position_delta = _subtract(camera_position, _xyz(player_matrix.pos))
+    player_position = _big_position_xyz(player_matrix.pos)
+    position_delta = _subtract(camera_position, player_position)
+    _log.info(
+        "Selfie capture probe player=%s camera=%s delta=%s distance=%.6f",
+        player_position,
+        camera_position,
+        position_delta,
+        _length(position_delta),
+    )
     if not all(math.isfinite(value) for value in position_delta):
         raise ValueError("invalid camera position")
     if _length(position_delta) > 100:
@@ -196,20 +223,20 @@ def _apply_pose(camera, profile, set_position=True):
         raise RuntimeError("player is unavailable")
     pose = CAMERA_PROFILES[profile]
 
-    player_matrix = GetNodeAbsoluteTransMatrix(player.mRootNode)
+    player_matrix = _get_player_matrix(player)
     basis = tuple(_normalise(_xyz(axis)) for axis in (
         player_matrix.right,
         player_matrix.up,
         player_matrix.at,
     ))
-    camera_matrix = camera.contents.matrix
+    camera_matrix = camera.contents
 
     _set_vector(camera_matrix.right, _normalise(_to_world(pose["right"], basis)))
     _set_vector(camera_matrix.up, _normalise(_to_world(pose["up"], basis)))
     _set_vector(camera_matrix.at, _normalise(_to_world(pose["at"], basis)))
 
     relative_position = _to_world(pose["position"], basis)
-    player_position = _xyz(player_matrix.pos)
+    player_position = _big_position_xyz(player_matrix.pos)
     desired_position = tuple(
         player_position[index] + relative_position[index]
         for index in range(3)
@@ -217,12 +244,14 @@ def _apply_pose(camera, profile, set_position=True):
     if set_position:
         big_position_offset = _xyz(camera_matrix.pos.offset)
         _set_vector(camera_matrix.pos.local, _subtract(desired_position, big_position_offset))
-    gameData.player_state.mPhotoModeSettings.FoV = pose["fov"]
+    # The large cGcPlayerState tail moved in Cosmos. Until the new
+    # mPhotoModeSettings offset is independently verified, preserve the game's
+    # current FOV instead of risking a write into a neighbouring field.
     return player_position, desired_position
 
 
 def _finish_pose(camera, profile):
-    camera_matrix = camera.contents.matrix
+    camera_matrix = camera.contents
     actual_position = tuple(
         local + offset
         for local, offset in zip(
@@ -259,7 +288,7 @@ def _finish_pose(camera, profile):
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent collision-aware selfie camera pose."
-    __version__ = "1.0"
+    __version__ = "1.1-cosmos-transform"
 
     def __init__(self):
         super().__init__()

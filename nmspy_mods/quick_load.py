@@ -23,15 +23,20 @@ from pymhf.core.hooking import on_key_pressed
 import nmspy.data.types as nms
 
 
-QUICK_LOAD_KEY = "f9"
+# F9 belongs to StormToggle. Keep Quick Load on a menu-only dedicated key so
+# pressing the storm toggle in-game cannot silently arm a later save load.
+QUICK_LOAD_KEY = "f12"
 UI_SLOT_NUMBER = 0
 
-_OFF_PHASE = 0x0A74
-_OFF_SELECTED_FLAG = 0x0A8C
-_OFF_PENDING_SLOT = 0x0AEC
-_OFF_SELECTED_SLOT = 0x0AF0
-_OFF_LOAD_REQUESTED = 0x0AF4
-_OFF_CONFIRM = 0x0AF8
+# Cosmos inserted 0x50 bytes ahead of this state block.  The phase jump table
+# and the save-selection call sites in the current executable confirm the new
+# locations below.
+_OFF_PHASE = 0x0AC4
+_OFF_SELECTED_FLAG = 0x0ADC
+_OFF_PENDING_SLOT = 0x0B3C
+_OFF_SELECTED_SLOT = 0x0B40
+_OFF_LOAD_REQUESTED = 0x0B44
+_OFF_CONFIRM = 0x0B48
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quick_load.log")
 
@@ -74,7 +79,7 @@ def _wu32(base: int, off: int, val: int) -> None:
 class QuickLoad(Mod):
     __author__ = "Tyler Kershner"
     __description__ = f"Press {QUICK_LOAD_KEY.upper()} at the main menu to load save slot {UI_SLOT_NUMBER}"
-    __version__ = "1.8"
+    __version__ = "1.9-cosmos"
 
     def __init__(self):
         super().__init__()
