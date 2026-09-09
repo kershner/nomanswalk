@@ -39,6 +39,10 @@ REQUEST_FILE = os.path.join(_BASE_DIR, "selfie_camera_request.json")
 STATUS_FILE = os.path.join(_BASE_DIR, "selfie_camera_status.json")
 CAPTURE_FILE = os.path.join(_BASE_DIR, "selfie_camera_capture.json")
 READY_FRAMES = 3
+# Cosmos inserted 0x400 bytes at the front of cGcPlayerState. The historical
+# mPhotoModeSettings.FoV address was 0x1A0D0 + 0x34; its Cosmos address is
+# therefore 0x1A504 from the live cGcPlayerState base.
+_COSMOS_PHOTO_MODE_FOV_OFFSET = 0x1A504
 
 # Built-in fallbacks used until F11 creates a machine-local calibration file.
 CAMERA_PROFILES = {
@@ -108,7 +112,15 @@ def _atomic_json(path, payload):
     temp_file = f"{path}.tmp"
     with open(temp_file, "w", encoding="utf-8") as file:
         json.dump(payload, file)
-    os.replace(temp_file, path)
+    last_error = None
+    for _ in range(20):
+        try:
+            os.replace(temp_file, path)
+            return
+        except OSError as error:
+            last_error = error
+            time.sleep(0.05)
+    raise last_error
 
 
 def _write_status(request_id, state, message=""):
@@ -122,8 +134,10 @@ def _write_status(request_id, state, message=""):
                 "timestamp": time.time(),
             },
         )
+        return True
     except OSError:
         _log.exception("Could not write selfie camera status")
+        return False
 
 
 def _xyz(vector):
@@ -171,6 +185,47 @@ def _big_position_xyz(position):
 
 def _local(vector, basis):
     return [_dot(vector, axis) for axis in basis]
+
+
+def _photo_mode_fov_slot():
+    try:
+        player_state = gameData.player_state
+        if player_state is None:
+            return None
+        return ctypes.c_float.from_address(
+            ctypes.addressof(player_state) + _COSMOS_PHOTO_MODE_FOV_OFFSET
+        )
+    except Exception:
+        return None
+
+
+def _read_photo_mode_fov():
+    slot = _photo_mode_fov_slot()
+    if slot is None:
+        return None
+    value = float(slot.value)
+    return value if math.isfinite(value) and 1.0 <= value <= 180.0 else None
+
+
+def _set_photo_mode_fov(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(value) or not 1.0 <= value <= 180.0:
+        return False
+
+    slot = _photo_mode_fov_slot()
+    if slot is None:
+        return False
+
+    # Refuse to write unless the target currently contains a plausible FOV.
+    # This keeps a future layout change from turning this into a blind write.
+    current = float(slot.value)
+    if not math.isfinite(current) or not 1.0 <= current <= 180.0:
+        return False
+    slot.value = value
+    return True
 
 
 def _validated_pose(value, fallback):
@@ -253,7 +308,7 @@ def _capture_pose(camera):
         "right": _local(_normalise(_xyz(camera_matrix.right)), basis),
         "up": _local(_normalise(_xyz(camera_matrix.up)), basis),
         "at": _local(_normalise(_xyz(camera_matrix.at)), basis),
-        "fov": float(gameData.player_state.mPhotoModeSettings.FoV),
+        "fov": _read_photo_mode_fov() or 120.0,
     }
     _atomic_json(CAPTURE_FILE, pose)
     return pose
@@ -285,9 +340,7 @@ def _apply_pose(camera, pose, set_position=True):
     if set_position:
         big_position_offset = _xyz(camera_matrix.pos.offset)
         _set_vector(camera_matrix.pos.local, _subtract(desired_position, big_position_offset))
-    # The large cGcPlayerState tail moved in Cosmos. Until the new
-    # mPhotoModeSettings offset is independently verified, preserve the game's
-    # current FOV instead of risking a write into a neighbouring field.
+    _set_photo_mode_fov(pose["fov"])
     return player_position, desired_position
 
 
@@ -323,13 +376,20 @@ def _finish_pose(camera, pose):
     if not collision_position:
         offset = _xyz(camera_matrix.pos.offset)
         _set_vector(camera_matrix.pos.local, _subtract(desired_position, offset))
-    return collision_position
+    final_position = tuple(
+        local + offset
+        for local, offset in zip(
+            _xyz(camera_matrix.pos.local),
+            _xyz(camera_matrix.pos.offset),
+        )
+    )
+    return collision_position, actual_position, final_position, player_position, desired_position
 
 
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent collision-aware selfie camera pose."
-    __version__ = "1.2-file-calibration"
+    __version__ = "1.4-cosmos-camera-diagnostics"
 
     def __init__(self):
         super().__init__()
@@ -340,7 +400,8 @@ class SelfieCamera(Mod):
         self._capture_requested = False
         self._profile = "production"
         self._pose = None
-        _log.info("Selfie camera loaded with permanent pose")
+        self._ready_published = False
+        _log.info("Selfie camera loaded version %s", self.__version__)
 
     @on_key_pressed("f11")
     def request_capture(self):
@@ -352,6 +413,7 @@ class SelfieCamera(Mod):
         self._ready_frames = 0
         self._profile = "production"
         self._pose = None
+        self._ready_published = False
 
     def _poll_request(self):
         try:
@@ -382,6 +444,7 @@ class SelfieCamera(Mod):
             self._profile = profile
             self._pose = _load_pose(profile)
             self._ready_frames = 0
+            self._ready_published = False
             _write_status(request_id, "positioning")
         except Exception as error:
             request_id = str(request.get("request_id", "")) if "request" in locals() else ""
@@ -401,6 +464,12 @@ class SelfieCamera(Mod):
             if self._pose is None:
                 raise RuntimeError("selfie camera pose is unavailable")
             _apply_pose(camera, self._pose)
+            if self._ready_frames == 0:
+                _log.info(
+                    "Selfie camera FOV requested=%s current=%s",
+                    self._pose["fov"],
+                    _read_photo_mode_fov(),
+                )
         except Exception as error:
             request_id = self._request_id or ""
             self._clear()
@@ -421,7 +490,24 @@ class SelfieCamera(Mod):
         try:
             if self._pose is None:
                 raise RuntimeError("selfie camera pose is unavailable")
-            _finish_pose(camera, self._pose)
+            (
+                collision_position,
+                native_position,
+                final_position,
+                player_position,
+                desired_position,
+            ) = _finish_pose(camera, self._pose)
+            if self._ready_frames == 0:
+                _log.info(
+                    "Selfie camera position player=%s desired=%s native=%s final=%s "
+                    "collision_accepted=%s local_pose=%s",
+                    player_position,
+                    desired_position,
+                    native_position,
+                    final_position,
+                    collision_position,
+                    self._pose["position"],
+                )
         except Exception as error:
             request_id = self._request_id
             self._clear()
@@ -429,5 +515,5 @@ class SelfieCamera(Mod):
             _log.error("Selfie camera finalization failed:\n%s", traceback.format_exc())
             return
         self._ready_frames += 1
-        if self._ready_frames == READY_FRAMES:
-            _write_status(self._request_id, "ready")
+        if self._ready_frames >= READY_FRAMES and not self._ready_published:
+            self._ready_published = _write_status(self._request_id, "ready")
