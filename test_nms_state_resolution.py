@@ -1,6 +1,6 @@
 import unittest
 
-from nms_bot import get_coarse_player_state
+from nms_bot import STATE_MAX_AGE_SECONDS, get_coarse_player_state, is_state_snapshot_fresh
 
 
 class CoarsePlayerStateTests(unittest.TestCase):
@@ -31,6 +31,22 @@ class CoarsePlayerStateTests(unittest.TestCase):
 
         self.assertEqual(get_coarse_player_state(data), "NOT_ON_FOOT")
 
+
+class StateSnapshotFreshnessTests(unittest.TestCase):
+    def test_recent_snapshot_is_fresh(self):
+        self.assertTrue(is_state_snapshot_fresh({"timestamp": 100.0}, now=105.0))
+
+    def test_frozen_snapshot_is_stale(self):
+        self.assertFalse(
+            is_state_snapshot_fresh(
+                {"timestamp": 100.0},
+                now=100.0 + STATE_MAX_AGE_SECONDS + 0.001,
+            )
+        )
+
+    def test_missing_or_invalid_timestamp_is_stale(self):
+        self.assertFalse(is_state_snapshot_fresh({}, now=100.0))
+        self.assertFalse(is_state_snapshot_fresh({"timestamp": "bad"}, now=100.0))
 
 if __name__ == "__main__":
     unittest.main()

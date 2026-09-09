@@ -26,6 +26,7 @@ TELEPORT_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "teleport_request.j
 SELFIE_CAMERA_REQUEST_FILE = os.path.join(BASE_DIR, "nmspy_mods", "selfie_camera_request.json")
 SELFIE_CAMERA_STATUS_FILE = os.path.join(BASE_DIR, "nmspy_mods", "selfie_camera_status.json")
 STATE_POLL_INTERVAL = 1  # seconds
+STATE_MAX_AGE_SECONDS = 15  # state logger normally publishes every 5 seconds
 SECONDS_PER_STEP = 1.0   # how long forward/back holds per unit
 
 MOUSE_STEP = 10
@@ -369,8 +370,23 @@ def get_coarse_player_state(data: dict | None = None) -> str:
     return "ON_FOOT"
 
 
+def is_state_snapshot_fresh(data: dict, now: float | None = None) -> bool:
+    """Return whether a state snapshot is recent enough to drive automation."""
+    try:
+        timestamp = float((data or {}).get("timestamp", 0.0))
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(timestamp) or timestamp <= 0.0:
+        return False
+    age = (time.time() if now is None else float(now)) - timestamp
+    return -2.0 <= age <= STATE_MAX_AGE_SECONDS
+
+
 def poll_state():
     global _autowalk_enabled
+
+    last_processed_timestamp = None
+    stale_logged = False
 
     while True:
         try:
@@ -378,8 +394,34 @@ def poll_state():
                 data = json.load(f)
 
             ts = float(data.get("timestamp", 0.0))
+
+            if not is_state_snapshot_fresh(data):
+                NMSState.update("NOT_ON_FOOT", ts, data)
+                _reset_stuck()
+                if not stale_logged:
+                    log(
+                        "State snapshot is stale; pausing state-driven commands "
+                        "and stuck recovery until StateLogger resumes."
+                    )
+                    stale_logged = True
+                time.sleep(STATE_POLL_INTERVAL)
+                continue
+
+            if stale_logged:
+                log("Fresh state snapshots resumed.")
+                stale_logged = False
+
             state = get_coarse_player_state(data)
             NMSState.update(state, ts, data)
+
+            # StateLogger publishes every few seconds while this poller reads
+            # once per second. A repeated snapshot is not another stationary
+            # movement sample and must never advance the stuck timer.
+            if ts == last_processed_timestamp:
+                time.sleep(STATE_POLL_INTERVAL)
+                continue
+            last_processed_timestamp = ts
+
             update_daily_movement(state, data)
 
             if state != "ON_FOOT":

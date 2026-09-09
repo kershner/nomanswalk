@@ -122,10 +122,31 @@ def _validate_address(ga) -> bool:
     except Exception:
         return False
 
-def _write_state(payload: dict):
+def _write_state(payload: dict) -> bool:
+    """Publish a state snapshot without allowing a transient file lock to kill the game hook."""
     payload["timestamp"] = time.time()
     state_file = os.path.join(_base_dir, "nms_state.json")
     temp_file = f"{state_file}.tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    os.replace(temp_file, state_file)
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        # Windows may deny replacement during the brief interval in which the
+        # bot has the destination open for reading. Retrying the same completed
+        # temporary file preserves atomicity and keeps that race out of pyMHF's
+        # injected callback.
+        for attempt in range(20):
+            try:
+                os.replace(temp_file, state_file)
+                return True
+            except OSError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    except OSError:
+        logging.getLogger(__name__).exception("Could not publish NMS state snapshot")
+        try:
+            os.remove(temp_file)
+        except OSError:
+            pass
+        return False

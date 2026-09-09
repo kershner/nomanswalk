@@ -40,7 +40,7 @@ STATUS_FILE = os.path.join(_BASE_DIR, "selfie_camera_status.json")
 CAPTURE_FILE = os.path.join(_BASE_DIR, "selfie_camera_capture.json")
 READY_FRAMES = 3
 
-# Player-relative camera poses for each bot/server environment.
+# Built-in fallbacks used until F11 creates a machine-local calibration file.
 CAMERA_PROFILES = {
     "dev": {
         "position": (0.3819905381652802, 0.13626888326393963, 0.21394229053180758),
@@ -173,6 +173,48 @@ def _local(vector, basis):
     return [_dot(vector, axis) for axis in basis]
 
 
+def _validated_pose(value, fallback):
+    if not isinstance(value, dict):
+        raise ValueError("selfie calibration must be a JSON object")
+
+    pose = {}
+    for name in ("position", "right", "up", "at"):
+        vector = value.get(name)
+        if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+            raise ValueError(f"selfie calibration {name} must contain three numbers")
+        vector = tuple(float(component) for component in vector)
+        if not all(math.isfinite(component) for component in vector):
+            raise ValueError(f"selfie calibration {name} contains a non-finite number")
+        if name == "position":
+            if _length(vector) > 100.0:
+                raise ValueError("selfie calibration position is outside the safe range")
+        elif _length(vector) < 0.001:
+            raise ValueError(f"selfie calibration {name} is not a direction")
+        pose[name] = vector
+
+    try:
+        fov = float(value.get("fov", fallback["fov"]))
+    except (TypeError, ValueError):
+        fov = float(fallback["fov"])
+    pose["fov"] = fov if math.isfinite(fov) and fov > 0.0 else float(fallback["fov"])
+    return pose
+
+
+def _load_pose(profile):
+    """Load the latest F11 calibration, falling back to the bundled profile."""
+    fallback = CAMERA_PROFILES[profile]
+    try:
+        with open(CAPTURE_FILE, "r", encoding="utf-8") as file:
+            pose = _validated_pose(json.load(file), fallback)
+        _log.info("Using F11 selfie calibration from %s", CAPTURE_FILE)
+        return pose
+    except FileNotFoundError:
+        _log.info("No F11 selfie calibration found; using %s fallback", profile)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, KeyError):
+        _log.exception("Invalid F11 selfie calibration; using %s fallback", profile)
+    return _validated_pose(fallback, fallback)
+
+
 def _capture_pose(camera):
     """Write the current player-relative photo-mode pose for calibration."""
     player = gameData.player
@@ -217,11 +259,10 @@ def _capture_pose(camera):
     return pose
 
 
-def _apply_pose(camera, profile, set_position=True):
+def _apply_pose(camera, pose, set_position=True):
     player = gameData.player
     if player is None:
         raise RuntimeError("player is unavailable")
-    pose = CAMERA_PROFILES[profile]
 
     player_matrix = _get_player_matrix(player)
     basis = tuple(_normalise(_xyz(axis)) for axis in (
@@ -250,7 +291,7 @@ def _apply_pose(camera, profile, set_position=True):
     return player_position, desired_position
 
 
-def _finish_pose(camera, profile):
+def _finish_pose(camera, pose):
     camera_matrix = camera.contents
     actual_position = tuple(
         local + offset
@@ -261,7 +302,7 @@ def _finish_pose(camera, profile):
     )
     player_position, desired_position = _apply_pose(
         camera,
-        profile,
+        pose,
         set_position=False,
     )
     actual_delta = _subtract(actual_position, player_position)
@@ -288,7 +329,7 @@ def _finish_pose(camera, profile):
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent collision-aware selfie camera pose."
-    __version__ = "1.1-cosmos-transform"
+    __version__ = "1.2-file-calibration"
 
     def __init__(self):
         super().__init__()
@@ -298,6 +339,7 @@ class SelfieCamera(Mod):
         self._request_mtime = None
         self._capture_requested = False
         self._profile = "production"
+        self._pose = None
         _log.info("Selfie camera loaded with permanent pose")
 
     @on_key_pressed("f11")
@@ -309,6 +351,7 @@ class SelfieCamera(Mod):
         self._expires_at = 0.0
         self._ready_frames = 0
         self._profile = "production"
+        self._pose = None
 
     def _poll_request(self):
         try:
@@ -337,6 +380,7 @@ class SelfieCamera(Mod):
             self._request_id = request_id
             self._expires_at = expires_at
             self._profile = profile
+            self._pose = _load_pose(profile)
             self._ready_frames = 0
             _write_status(request_id, "positioning")
         except Exception as error:
@@ -354,7 +398,9 @@ class SelfieCamera(Mod):
                 _write_status(self._request_id, "error", "request expired")
                 self._clear()
                 return
-            _apply_pose(camera, self._profile)
+            if self._pose is None:
+                raise RuntimeError("selfie camera pose is unavailable")
+            _apply_pose(camera, self._pose)
         except Exception as error:
             request_id = self._request_id or ""
             self._clear()
@@ -373,7 +419,9 @@ class SelfieCamera(Mod):
         if not self._request_id:
             return
         try:
-            _finish_pose(camera, self._profile)
+            if self._pose is None:
+                raise RuntimeError("selfie camera pose is unavailable")
+            _finish_pose(camera, self._pose)
         except Exception as error:
             request_id = self._request_id
             self._clear()

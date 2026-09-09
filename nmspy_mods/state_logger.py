@@ -1190,9 +1190,12 @@ class StateLogger(Mod):
             payload["movement"] = dict(self._last_good_movement)
             payload["universe_address"] = dict(self._last_good_universe_address)
 
-        _write_state(payload)
-
-        self._last_write_time = time.time()
+        if _write_state(payload):
+            self._last_write_time = time.time()
+        else:
+            # Retry soon, but avoid invoking a failed disk write on every game
+            # frame while an external process temporarily holds the file.
+            self._last_write_time = time.time() - self._poll_interval + 1.0
 
     def _restore_from_location(self):
         self.current_state = _state_from_location(self.state.last_location_stable)
