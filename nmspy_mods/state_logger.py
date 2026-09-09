@@ -17,6 +17,7 @@
 
 import ctypes
 import math
+import os
 import time
 import traceback
 
@@ -1095,7 +1096,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.7-cosmos-direct-environment"
+    __version__ = "1.8-cosmos-direct-environment"
 
     state = NMSModState()
 
