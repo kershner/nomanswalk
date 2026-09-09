@@ -187,6 +187,14 @@ def _local(vector, basis):
     return [_dot(vector, axis) for axis in basis]
 
 
+def _player_basis(player):
+    matrix = _get_player_matrix(player)
+    return tuple(
+        _normalise(_xyz(axis))
+        for axis in (matrix.right, matrix.up, matrix.at)
+    )
+
+
 def _photo_mode_fov_slot():
     try:
         player_state = gameData.player_state
@@ -270,17 +278,13 @@ def _load_pose(profile):
     return _validated_pose(fallback, fallback)
 
 
-def _capture_pose(camera):
+def _capture_pose(camera, basis):
     """Write the current player-relative photo-mode pose for calibration."""
     player = gameData.player
     if player is None:
         raise RuntimeError("player is unavailable")
 
     player_matrix = _get_player_matrix(player)
-    basis = tuple(
-        _normalise(_xyz(axis))
-        for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
-    )
     camera_matrix = camera.contents
     camera_position = tuple(
         local + offset
@@ -314,17 +318,12 @@ def _capture_pose(camera):
     return pose
 
 
-def _apply_pose(camera, pose, set_position=True):
+def _apply_pose(camera, pose, basis, set_position=True):
     player = gameData.player
     if player is None:
         raise RuntimeError("player is unavailable")
 
     player_matrix = _get_player_matrix(player)
-    basis = tuple(_normalise(_xyz(axis)) for axis in (
-        player_matrix.right,
-        player_matrix.up,
-        player_matrix.at,
-    ))
     camera_matrix = camera.contents
 
     _set_vector(camera_matrix.right, _normalise(_to_world(pose["right"], basis)))
@@ -344,7 +343,7 @@ def _apply_pose(camera, pose, set_position=True):
     return player_position, desired_position
 
 
-def _finish_pose(camera, pose):
+def _finish_pose(camera, pose, basis):
     camera_matrix = camera.contents
     actual_position = tuple(
         local + offset
@@ -356,6 +355,7 @@ def _finish_pose(camera, pose):
     player_position, desired_position = _apply_pose(
         camera,
         pose,
+        basis,
         set_position=False,
     )
     actual_delta = _subtract(actual_position, player_position)
@@ -389,7 +389,7 @@ def _finish_pose(camera, pose):
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent collision-aware selfie camera pose."
-    __version__ = "1.4-cosmos-camera-diagnostics"
+    __version__ = "1.5-stable-photo-session-basis"
 
     def __init__(self):
         super().__init__()
@@ -401,6 +401,8 @@ class SelfieCamera(Mod):
         self._profile = "production"
         self._pose = None
         self._ready_published = False
+        self._photo_session_basis = None
+        self._last_photo_frame_at = 0.0
         _log.info("Selfie camera loaded version %s", self.__version__)
 
     @on_key_pressed("f11")
@@ -414,6 +416,18 @@ class SelfieCamera(Mod):
         self._profile = "production"
         self._pose = None
         self._ready_published = False
+
+    def _prepare_photo_session(self):
+        """Latch the pre-animation-drift player basis once per photo session."""
+        now = time.monotonic()
+        if self._photo_session_basis is None or now - self._last_photo_frame_at > 1.0:
+            player = gameData.player
+            if player is None:
+                raise RuntimeError("player is unavailable")
+            self._photo_session_basis = _player_basis(player)
+            _log.info("Selfie photo-session basis latched: %s", self._photo_session_basis)
+        self._last_photo_frame_at = now
+        return self._photo_session_basis
 
     def _poll_request(self):
         try:
@@ -454,6 +468,7 @@ class SelfieCamera(Mod):
     @_PhotoModeCameraBehaviour.Update.before
     def before_photo_camera_update(self, this, lfTimeStep, camera):
         try:
+            basis = self._prepare_photo_session()
             self._poll_request()
             if not self._request_id:
                 return
@@ -463,7 +478,7 @@ class SelfieCamera(Mod):
                 return
             if self._pose is None:
                 raise RuntimeError("selfie camera pose is unavailable")
-            _apply_pose(camera, self._pose)
+            _apply_pose(camera, self._pose, basis)
             if self._ready_frames == 0:
                 _log.info(
                     "Selfie camera FOV requested=%s current=%s",
@@ -481,7 +496,9 @@ class SelfieCamera(Mod):
         if self._capture_requested:
             self._capture_requested = False
             try:
-                pose = _capture_pose(camera)
+                if self._photo_session_basis is None:
+                    raise RuntimeError("photo-session basis is unavailable")
+                pose = _capture_pose(camera, self._photo_session_basis)
                 _log.info("Captured selfie camera diagnostic pose: %s", pose)
             except Exception:
                 _log.error("Selfie camera capture failed:\n%s", traceback.format_exc())
@@ -496,7 +513,7 @@ class SelfieCamera(Mod):
                 final_position,
                 player_position,
                 desired_position,
-            ) = _finish_pose(camera, self._pose)
+            ) = _finish_pose(camera, self._pose, self._photo_session_basis)
             if self._ready_frames == 0:
                 _log.info(
                     "Selfie camera position player=%s desired=%s native=%s final=%s "
