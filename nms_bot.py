@@ -347,6 +347,28 @@ def get_command_state(data: dict | None = None, fallback_state: str | None = Non
     return resolve_command_state(snapshot, fallback_state or NMSState.get())
 
 
+def get_coarse_player_state(data: dict | None = None) -> str:
+    """Resolve the state used by walking and stuck detection.
+
+    EnvironmentLocation can become valid before the state logger's coarse
+    state changes from UNKNOWN during startup or a warp.  Trust an explicit
+    coarse state first, then recover from a valid granular location.
+    """
+    snapshot = NMSState.get_data() if data is None else (data or {})
+    raw_state = snapshot.get("state", "UNKNOWN")
+
+    if raw_state == "ON_FOOT":
+        return "ON_FOOT"
+    if raw_state in {"IN_COCKPIT", "GALAXY_MAP"}:
+        return "NOT_ON_FOOT"
+
+    command_state = resolve_command_state(snapshot, fallback="UNKNOWN")
+    if command_state in {"UNKNOWN", "GALAXY_MAP", "Space", "PlanetInShip"}:
+        return "NOT_ON_FOOT"
+
+    return "ON_FOOT"
+
+
 def poll_state():
     global _autowalk_enabled
 
@@ -356,8 +378,7 @@ def poll_state():
                 data = json.load(f)
 
             ts = float(data.get("timestamp", 0.0))
-            raw_state = data.get("state", "UNKNOWN")
-            state = "NOT_ON_FOOT" if raw_state in {"IN_COCKPIT", "GALAXY_MAP", "UNKNOWN"} else "ON_FOOT"
+            state = get_coarse_player_state(data)
             NMSState.update(state, ts, data)
             update_daily_movement(state, data)
 

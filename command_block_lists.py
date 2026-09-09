@@ -183,7 +183,7 @@ def resolve_command_state(data, fallback="UNKNOWN"):
     """Resolve a state snapshot to one of the command block-list keys."""
     data = data or {}
     game_state = data.get("state")
-    if game_state in {"GALAXY_MAP", "UNKNOWN"}:
+    if game_state == "GALAXY_MAP":
         return game_state
 
     coarse_fallback = COMMAND_STATE_BY_GAME_STATE.get(game_state)

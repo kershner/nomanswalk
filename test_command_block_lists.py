@@ -60,6 +60,17 @@ class CommandBlockListTests(unittest.TestCase):
 
         self.assertEqual(resolve_command_state(data), "UNKNOWN")
 
+    def test_valid_location_overrides_stale_unknown_coarse_state(self):
+        data = {
+            "state": "UNKNOWN",
+            "environment": {
+                "location_stable_raw": 3,
+                "location_stable": "PlanetOnFoot",
+            },
+        }
+
+        self.assertEqual(resolve_command_state(data), "PlanetOnFoot")
+
 
 if __name__ == "__main__":
     unittest.main()

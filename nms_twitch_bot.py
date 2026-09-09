@@ -1481,6 +1481,17 @@ class NMSBot(commands.Bot):
 
         state = NMSState.get()
         if not is_command_allowed(name, state):
+            snapshot = NMSState.get_data()
+            environment = snapshot.get("environment") or {}
+            log(
+                f"Command denied: !{name} coarse={state} "
+                f"snapshot_state={snapshot.get('state')} "
+                f"command_state={get_command_state(snapshot, fallback_state=state)} "
+                f"location={environment.get('location')} "
+                f"location_stable={environment.get('location_stable')} "
+                f"location_raw={environment.get('location_raw')} "
+                f"location_stable_raw={environment.get('location_stable_raw')}"
+            )
             await self._say(ctx, f"!{name} is not available in the current state.")
             return
 
