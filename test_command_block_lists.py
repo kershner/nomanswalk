@@ -41,7 +41,21 @@ class CommandBlockListTests(unittest.TestCase):
         # must remain available as a recovery mechanism.
         self.assertNotIn("teleport", blocked_commands_for_state("TRANSITIONING"))
 
-    def test_unset_location_remains_unknown(self):
+    def test_unset_location_uses_coarse_on_foot_state(self):
+        data = {
+            "state": "ON_FOOT",
+            "environment": {
+                "location_raw": 4126608632,
+                "location_stable_raw": 0,
+                "location_stable": "None_",
+            },
+        }
+
+        self.assertEqual(resolve_command_state(data), "PlanetOnFoot")
+        self.assertNotIn("jet", blocked_commands_for_state(resolve_command_state(data)))
+        self.assertIn("launch", blocked_commands_for_state(resolve_command_state(data)))
+
+    def test_unset_location_without_coarse_state_remains_unknown(self):
         data = {"environment": {"location_stable": "None_"}}
 
         self.assertEqual(resolve_command_state(data), "UNKNOWN")

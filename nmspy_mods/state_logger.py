@@ -51,8 +51,28 @@ DEFAULT_POLL_INTERVAL = 5.0
 _COSMOS_PLANET_DATA_OFFSET = 0x140
 _COSMOS_PLANET_GENERATION_INPUT_OFFSET = 0x3B40
 _COSMOS_PLANET_NAME_OFFSET = 0x3AAE
-_COSMOS_ENV_LOCATION_OFFSET = 0x478
-_COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x484
+# Verified from the Cosmos NMS.exe cGcPlayerEnvironment::IsOnPlanet machine
+# code.  The pre-Cosmos nmspy layout is now shifted by 0x1C, not 0x20.
+_COSMOS_ENV_LOCATION_OFFSET = 0x474
+_COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x480
+
+# Cosmos inserted 0x400 bytes at the front of cGcPlayerState.  AwardUnits in
+# the current executable accesses Units/Nanites at +0x89C/+0x8A0, confirming
+# the shift from nmspy's pre-Cosmos +0x49C/+0x4A0 layout.
+_COSMOS_PLAYER_STATE_PREFIX = 0x400
+_COSMOS_PLAYER_NAME_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x000
+_COSMOS_PLAYER_LOCATION_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x460
+_COSMOS_PLAYER_SHIELD_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x490
+_COSMOS_PLAYER_HEALTH_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x494
+_COSMOS_PLAYER_SHIP_HEALTH_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x498
+_COSMOS_PLAYER_UNITS_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x49C
+_COSMOS_PLAYER_NANITES_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x4A0
+_COSMOS_PLAYER_SPECIALS_OFFSET = _COSMOS_PLAYER_STATE_PREFIX + 0x4A4
+
+_VALID_ENVIRONMENT_LOCATIONS = {
+    member.value for member in EnvironmentLocation.Enum
+    if member is not EnvironmentLocation.Enum.None_
+}
 
 NON_PLANET_LOCATIONS = {
     EnvironmentLocation.Enum.SpaceStation,
@@ -405,6 +425,22 @@ def _round_pos(pos):
     }
 
 
+def _player_state_address():
+    """Return the live cGcPlayerState base address, if currently readable."""
+    try:
+        player_state = _get_player_state()
+        return ctypes.addressof(player_state) if player_state is not None else 0
+    except Exception:
+        return 0
+
+
+def _valid_player_name(name):
+    if not name or "\ufffd" in name:
+        return False
+
+    return all(character.isprintable() for character in name)
+
+
 def _get_live_player():
     try:
         if _live_player_ptr:
@@ -554,12 +590,14 @@ def _normalize_planet_index(raw_idx):
 
 def _read_raw_ga_values():
     try:
-        ps = _get_player_state()
+        address = _player_state_address()
 
-        if ps is None:
+        if not address:
             return None
 
-        loc = ps.mLocation
+        loc = nmse.cGcUniverseAddressData.from_address(
+            address + _COSMOS_PLAYER_LOCATION_OFFSET
+        )
         ga = loc.GalacticAddress
 
         return {
@@ -612,27 +650,49 @@ def _read_planet_index_from_environment(env=None):
 
 def _gather_player_data(current_state):
     try:
-        ps = _get_player_state()
+        address = _player_state_address()
 
-        if ps is None:
+        if not address:
             return {}
 
-        health = int(ps.miHealth)
+        name_value = basic.cTkFixedString0x100.from_address(
+            address + _COSMOS_PLAYER_NAME_OFFSET
+        )
+        name = _str(name_value).strip()
+        health = ctypes.c_int32.from_address(
+            address + _COSMOS_PLAYER_HEALTH_OFFSET
+        ).value
+        shield = ctypes.c_int32.from_address(
+            address + _COSMOS_PLAYER_SHIELD_OFFSET
+        ).value
 
-        if not (0 <= health < 50_000_000):
+        if not (0 <= health < 50_000_000 and 0 <= shield < 50_000_000):
             return {}
 
         result = {
-            "name": _str(ps.mNameWithTitle),
             "health": health,
-            "shield": max(0, int(ps.miShield)),
-            "units": int(ps.muUnits),
-            "nanites": int(ps.muNanites),
-            "quicksilver": int(ps.muSpecials),
+            "shield": shield,
+            "units": ctypes.c_uint32.from_address(
+                address + _COSMOS_PLAYER_UNITS_OFFSET
+            ).value,
+            "nanites": ctypes.c_uint32.from_address(
+                address + _COSMOS_PLAYER_NANITES_OFFSET
+            ).value,
+            "quicksilver": ctypes.c_uint32.from_address(
+                address + _COSMOS_PLAYER_SPECIALS_OFFSET
+            ).value,
         }
 
+        # Cosmos changed the leading name storage independently of the numeric
+        # fields.  Do not let an unreadable cosmetic field invalidate the rest
+        # of an otherwise coherent player snapshot.
+        if _valid_player_name(name):
+            result["name"] = name
+
         if current_state == "IN_COCKPIT":
-            result["ship_health"] = max(0, int(ps.miShipHealth))
+            result["ship_health"] = max(0, ctypes.c_int32.from_address(
+                address + _COSMOS_PLAYER_SHIP_HEALTH_OFFSET
+            ).value)
 
         return result
 
@@ -768,26 +828,28 @@ def _gather_environment_data(env=None):
         env_address = ctypes.addressof(env)
 
         try:
-            loc_val = ctypes.c_uint32.from_address(
+            candidate = ctypes.c_uint32.from_address(
                 env_address + _COSMOS_ENV_LOCATION_OFFSET
             ).value
-            result["location_raw"] = loc_val
-            name = _enum_name(EnvironmentLocation.Enum, loc_val)
+            name = _enum_name(EnvironmentLocation.Enum, candidate)
 
-            if name and name != str(loc_val):
+            if name and name not in {str(candidate), "None_"}:
+                loc_val = candidate
+                result["location_raw"] = candidate
                 result["location"] = name
 
         except Exception:
             pass
 
         try:
-            stable_val = ctypes.c_uint32.from_address(
+            candidate = ctypes.c_uint32.from_address(
                 env_address + _COSMOS_ENV_LOCATION_STABLE_OFFSET
             ).value
-            result["location_stable_raw"] = stable_val
-            name = _enum_name(EnvironmentLocation.Enum, stable_val)
+            name = _enum_name(EnvironmentLocation.Enum, candidate)
 
-            if name and name != str(stable_val):
+            if name and name not in {str(candidate), "None_"}:
+                stable_val = candidate
+                result["location_stable_raw"] = candidate
                 result["location_stable"] = name
 
         except Exception:
@@ -1033,7 +1095,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.5-cosmos-position"
+    __version__ = "1.6-cosmos-state-layout"
 
     state = NMSModState()
 
@@ -1042,6 +1104,9 @@ class StateLogger(Mod):
     _poll_interval: float = DEFAULT_POLL_INTERVAL
     _planet_ptrs: dict = {}
     _standing_planet_idx: int = -1
+    _last_good_player: dict = {}
+    _last_good_movement: dict = {}
+    _last_good_universe_address: dict = {}
 
     @property
     @STRING("Current State:")
@@ -1094,14 +1159,27 @@ class StateLogger(Mod):
             self._last_env_data.get("is_in_cave"),
         )
 
-        _write_state(
-            _build_full_payload(
-                self.state.current or "UNKNOWN",
-                self._last_env_data,
-                self._planet_ptrs,
-                self._standing_planet_idx,
-            )
+        payload = _build_full_payload(
+            self.state.current or "UNKNOWN",
+            self._last_env_data,
+            self._planet_ptrs,
+            self._standing_planet_idx,
         )
+
+        # PlayerState and Player are reconstructed during warps.  Never replace
+        # a good public snapshot with data from the brief stale-pointer window.
+        if payload["player"]:
+            self._last_good_player = dict(payload["player"])
+            if payload["movement"]:
+                self._last_good_movement = dict(payload["movement"])
+            if payload["universe_address"]:
+                self._last_good_universe_address = dict(payload["universe_address"])
+        else:
+            payload["player"] = dict(self._last_good_player)
+            payload["movement"] = dict(self._last_good_movement)
+            payload["universe_address"] = dict(self._last_good_universe_address)
+
+        _write_state(payload)
 
         self._last_write_time = time.time()
 
@@ -1177,6 +1255,9 @@ class StateLogger(Mod):
         self._last_env_data = {}
         self._planet_ptrs = {}
         self._standing_planet_idx = -1
+        self._last_good_player = {}
+        self._last_good_movement = {}
+        self._last_good_universe_address = {}
 
     @nms.cGcPlanet.SetupRegionMap.after
     def on_planet_setup(self, this: ctypes._Pointer[nms.cGcPlanet]):
@@ -1220,7 +1301,10 @@ class StateLogger(Mod):
                         ctypes.addressof(pe) + _COSMOS_ENV_LOCATION_STABLE_OFFSET
                     ).value
 
-                    if loc_stable != self.state.last_location_stable:
+                    if (
+                        loc_stable in _VALID_ENVIRONMENT_LOCATIONS
+                        and loc_stable != self.state.last_location_stable
+                    ):
                         self.state.last_location_stable = loc_stable
                         self.state.in_galaxy_map = False
 

@@ -26,6 +26,15 @@ COMMAND_STATE_BY_LOCATION_NAME = {
     "Default": "Space",
 }
 
+# The state logger can retain a trustworthy coarse state while the live
+# EnvironmentLocation pointer is temporarily unavailable or corrupt.  Use the
+# most conservative matching granular state as a fallback in that case.
+COMMAND_STATE_BY_GAME_STATE = {
+    "ON_FOOT": "PlanetOnFoot",
+    "IN_COCKPIT": "PlanetInShip",
+    "NOT_ON_FOOT": "UNKNOWN",
+}
+
 ON_PLANET_STATES = {
     "PlanetOnFoot",
     "PlanetInShip",
@@ -177,12 +186,12 @@ def resolve_command_state(data, fallback="UNKNOWN"):
     if game_state in {"GALAXY_MAP", "UNKNOWN"}:
         return game_state
 
+    coarse_fallback = COMMAND_STATE_BY_GAME_STATE.get(game_state)
+
     environment = data.get("environment") or {}
     location = environment.get("location_stable")
     if location is None:
         location = environment.get("location")
-    if location == "None_":
-        return "UNKNOWN"
     location = COMMAND_STATE_BY_LOCATION_NAME.get(location, location)
     if location in BLOCKED_COMMANDS_BY_STATE:
         return location
@@ -195,7 +204,18 @@ def resolve_command_state(data, fallback="UNKNOWN"):
     except (TypeError, ValueError):
         location = None
 
+    # Raw zero means the granular location is unset, not that it should
+    # overrule a valid coarse state reported by the state logger.
+    if location == "UNKNOWN" and coarse_fallback:
+        location = None
+
+    fallback = COMMAND_STATE_BY_GAME_STATE.get(fallback, fallback)
     fallback = COMMAND_STATE_BY_LOCATION_NAME.get(fallback, fallback)
+    if coarse_fallback and fallback == "UNKNOWN":
+        fallback = coarse_fallback
+    elif fallback not in BLOCKED_COMMANDS_BY_STATE:
+        fallback = coarse_fallback
+
     return location or (fallback if fallback in BLOCKED_COMMANDS_BY_STATE else "UNKNOWN")
 
 
