@@ -50,10 +50,11 @@ class SelfieConfig:
 
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
-STUCK_SECONDS = 10       # time without movement
+STUCK_SECONDS = 8        # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
+TELEPORT_WALK_CONFIRM_SECONDS = 3
 RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
 MAX_WALK_SAMPLE_DISTANCE = 500.0
 
@@ -302,10 +303,21 @@ def set_planet_loading(val: bool):
 def is_planet_loading() -> bool:
     return bool(get_runtime_game_state().get("planet_loading", False))
 
+
+def _game_reports_autowalking(data=None) -> bool:
+    snapshot = NMSState.get_data() if data is None else (data or {})
+    return (snapshot.get("movement") or {}).get("is_auto_walking") is True
+
 def _is_in_cave() -> bool:
     data = NMSState.get_data()
-    location = ((data.get("environment") or {}).get("location") or "").strip()
-    return location == "Cave"
+    environment = data.get("environment") or {}
+    location = (environment.get("location") or "").strip()
+    stable_location = (environment.get("location_stable") or "").strip()
+    return (
+        bool(environment.get("is_in_cave"))
+        or location == "Cave"
+        or stable_location == "Cave"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +466,10 @@ def check_if_stuck(state, data):
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
 
     if state != "ON_FOOT" or not is_walking():
+        _reset_stuck()
+        return
+
+    if not _game_reports_autowalking(data):
         _reset_stuck()
         return
 
@@ -1079,6 +1095,22 @@ def gravity(args=None):
     """Toggle low gravity. Handled by the gravity_toggle mod."""
     send_key("f10", 0.1)
 
+
+def _resume_walk_after_teleport():
+    """Try autowalk twice, stopping if NMS reports that it engaged."""
+    global _autowalk_enabled
+
+    for _ in range(2):
+        _autowalk_enabled = False
+        walk()
+        time.sleep(TELEPORT_WALK_CONFIRM_SECONDS)
+        if _game_reports_autowalking():
+            return
+        log("Teleport: autowalk did not engage; retrying.")
+    log("Teleport: autowalk did not engage; stuck checks remain disabled.")
+    _autowalk_enabled = False
+    _reset_stuck()
+
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     set_planet_loading(True)
@@ -1088,7 +1120,7 @@ def _do_teleport(key, label):
         time.sleep(PLANET_LOAD_SECONDS)
         stop()
         time.sleep(0.1)
-        walk()
+        _resume_walk_after_teleport()
     finally:
         set_planet_loading(False)
         

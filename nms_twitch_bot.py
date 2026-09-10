@@ -315,9 +315,11 @@ class NMSBot(commands.Bot):
         self._active_command_tasks: set[asyncio.Task] = set()
         self._lockout_command: Optional[str] = None
         self._selfie_session: Optional[SelfieSession] = None
-        self._selfie_limits_enabled = bool(
-            get_runtime_game_state().get("selfie_limits_enabled", True)
-        )
+        # Temporarily disable selfie upload limits.
+        # self._selfie_limits_enabled = bool(
+        #     get_runtime_game_state().get("selfie_limits_enabled", True)
+        # )
+        self._selfie_limits_enabled = False
 
         self._tokens = None
         self._access_token = "dev"

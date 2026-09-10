@@ -12,19 +12,6 @@ import nmspy.data.types as nms
 from nmspy.common import gameData
 
 
-class _EngineCosmos(Structure):
-    @static_function_hook(
-        "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
-        "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
-    )
-    @staticmethod
-    def GetNodePhysRelMatrix(
-        result: ctypes._Pointer[basic.cTkPhysRelMat34],
-        node: ctypes.c_uint32,
-    ):
-        pass
-
-
 class _PlayerCosmos(Structure):
     @static_function_hook(
         "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC ? "
@@ -38,15 +25,6 @@ class _PlayerCosmos(Structure):
         velocity: ctypes._Pointer[basic.cTkVector3],
     ):
         pass
-
-
-def _get_node_phys_rel_matrix(node: basic.TkHandle):
-    matrix = basic.cTkPhysRelMat34()
-    _EngineCosmos.GetNodePhysRelMatrix(
-        ctypes.byref(matrix),
-        ctypes.c_uint32(int(node.lookupInt)),
-    )
-    return matrix
 
 
 TELEPORT_FEET = 1000.0
@@ -125,7 +103,7 @@ def _matrix_looks_valid(mat) -> bool:
 class AirDrop(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Press Y to teleport the player up away from the planet."
-    __version__ = "1.9-cosmos-up"
+    __version__ = "2.6-cosmos-player-offset"
 
     def __init__(self):
         super().__init__()
@@ -159,8 +137,12 @@ class AirDrop(Mod):
         except Exception:
             return None
 
-    def _get_position_and_direction(self, player):
-        matrix = _get_node_phys_rel_matrix(player.mRootNode)
+    def _get_position_and_direction(self):
+        env = self._get_environment()
+        if env is None:
+            return None, None
+
+        matrix = basic.cTkPhysRelMat34.from_address(ctypes.addressof(env))
         pos = matrix.pos
         facing = matrix.at
         local = pos.local
@@ -185,24 +167,26 @@ class AirDrop(Mod):
             if player is None:
                 _flog.info("[F4 PROBE] player unavailable")
                 return
-            handle = int(player.mRootNode.lookupInt)
-            matrix = _get_node_phys_rel_matrix(player.mRootNode)
+            env = self._get_environment()
+            if env is None:
+                _flog.info("[F4 PROBE] environment unavailable")
+                return
+            matrix = basic.cTkPhysRelMat34.from_address(ctypes.addressof(env))
             _flog.info(
-                "[F4 PROBE RAW] player=0x%X root=%08X local=(%r, %r, %r) offset=(%r, %r, %r) at=(%r, %r, %r)",
+                "[F4 PROBE RAW] player=0x%X env=0x%X local=(%r, %r, %r) offset=(%r, %r, %r) at=(%r, %r, %r)",
                 ctypes.addressof(player),
-                handle,
+                ctypes.addressof(env),
                 float(matrix.pos.local.x), float(matrix.pos.local.y), float(matrix.pos.local.z),
                 float(matrix.pos.offset.x), float(matrix.pos.offset.y), float(matrix.pos.offset.z),
                 float(matrix.at.x), float(matrix.at.y), float(matrix.at.z),
             )
-            pos, facing = self._get_position_and_direction(player)
+            pos, facing = self._get_position_and_direction()
             if pos is None or facing is None:
                 _flog.info("[F4 PROBE] position unavailable or implausible")
                 return
             up = self._get_up_vector(pos)
             _flog.info(
-                "[F4 PROBE] root=%08X local=(%.3f, %.3f, %.3f) offset=(%.3f, %.3f, %.3f) up=(%.6f, %.6f, %.6f) facing=(%.6f, %.6f, %.6f)",
-                int(player.mRootNode.lookupInt),
+                "[F4 PROBE] local=(%.3f, %.3f, %.3f) offset=(%.3f, %.3f, %.3f) up=(%.6f, %.6f, %.6f) facing=(%.6f, %.6f, %.6f)",
                 float(pos.local.x), float(pos.local.y), float(pos.local.z),
                 float(pos.offset.x), float(pos.offset.y), float(pos.offset.z),
                 up[0], up[1], up[2],
@@ -295,7 +279,7 @@ class AirDrop(Mod):
                 _flog.error("failed reading player.mbSpawned")
                 _flog.error(traceback.format_exc())
 
-            pos, facing = self._get_position_and_direction(player)
+            pos, facing = self._get_position_and_direction()
 
             if pos is None or facing is None:
                 _flog.info("aborting: player transform does not look valid")
@@ -304,19 +288,26 @@ class AirDrop(Mod):
             up_x, up_y, up_z = self._get_up_vector(pos)
             up_amount = TELEPORT_FEET * FEET_TO_GAME_UNITS
 
-            new_x = float(pos.local.x) + (up_x * up_amount)
-            new_y = float(pos.local.y) + (up_y * up_amount)
-            new_z = float(pos.local.z) + (up_z * up_amount)
-
             new_pos = basic.cTkBigPos(
-                basic.Vector3f(new_x, new_y, new_z),
-                basic.Vector3f(float(pos.offset.x), float(pos.offset.y), float(pos.offset.z)),
+                basic.Vector3f(
+                    float(pos.local.x) + (up_x * up_amount),
+                    float(pos.local.y) + (up_y * up_amount),
+                    float(pos.local.z) + (up_z * up_amount),
+                ),
+                basic.Vector3f(
+                    float(pos.offset.x),
+                    float(pos.offset.y),
+                    float(pos.offset.z),
+                ),
             )
-            direction = basic.cTkVector3(float(facing.x), float(facing.y), float(facing.z))
+            direction = basic.cTkVector3(
+                float(facing.x), float(facing.y), float(facing.z)
+            )
             velocity = basic.cTkVector3(0, 0, 0)
 
             _flog.info(
-                "calling SetToPosition old_pos=(%s, %s, %s) up=(%.6f, %.6f, %.6f) new_pos=(%s, %s, %s)",
+                "calling SetToPosition player=0x%X old_local=(%s, %s, %s) up=(%.6f, %.6f, %.6f) new_local=(%s, %s, %s)",
+                ctypes.addressof(player),
                 pos.local.x,
                 pos.local.y,
                 pos.local.z,
@@ -334,21 +325,8 @@ class AirDrop(Mod):
                 ctypes.byref(direction),
                 ctypes.byref(velocity),
             )
-
-            _flog.info("SetToPosition returned")
-
-            try:
-                if player.mPhysicsController:
-                    player.mPhysicsController.contents.mTargetVelocity = basic.cTkVector3(0, 0, 0)
-                    _flog.info("cleared physics target velocity")
-                else:
-                    _flog.info("player.mPhysicsController is empty")
-            except Exception:
-                _flog.error("failed clearing physics target velocity")
-                _flog.error(traceback.format_exc())
-
+            _flog.info("SetToPosition invocation finished")
             logger.info("Air drop: moved player up %s feet", TELEPORT_FEET)
-            _flog.info("Air drop complete: moved player up %s feet", TELEPORT_FEET)
 
         except Exception:
             _flog.error("unhandled air_drop error")

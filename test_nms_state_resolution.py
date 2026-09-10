@@ -1,6 +1,13 @@
 import unittest
 
-from nms_bot import STATE_MAX_AGE_SECONDS, get_coarse_player_state, is_state_snapshot_fresh
+from nms_bot import (
+    NMSState,
+    STATE_MAX_AGE_SECONDS,
+    _game_reports_autowalking,
+    _is_in_cave,
+    get_coarse_player_state,
+    is_state_snapshot_fresh,
+)
 
 
 class CoarsePlayerStateTests(unittest.TestCase):
@@ -47,6 +54,54 @@ class StateSnapshotFreshnessTests(unittest.TestCase):
     def test_missing_or_invalid_timestamp_is_stale(self):
         self.assertFalse(is_state_snapshot_fresh({}, now=100.0))
         self.assertFalse(is_state_snapshot_fresh({"timestamp": "bad"}, now=100.0))
+
+
+class CaveStateTests(unittest.TestCase):
+    def _set_environment(self, environment):
+        NMSState.update("ON_FOOT", 1.0, {"environment": environment})
+
+    def test_independent_cave_signal_wins_over_planet_on_foot_location(self):
+        self._set_environment(
+            {
+                "location": "PlanetOnFoot",
+                "location_stable": "PlanetOnFoot",
+                "is_in_cave": True,
+            }
+        )
+
+        self.assertTrue(_is_in_cave())
+
+    def test_stable_cave_location_is_accepted(self):
+        self._set_environment(
+            {
+                "location": "PlanetOnFoot",
+                "location_stable": "Cave",
+                "is_in_cave": False,
+            }
+        )
+
+        self.assertTrue(_is_in_cave())
+
+    def test_surface_location_is_not_a_cave(self):
+        self._set_environment(
+            {
+                "location": "PlanetOnFoot",
+                "location_stable": "PlanetOnFoot",
+                "is_in_cave": False,
+            }
+        )
+
+        self.assertFalse(_is_in_cave())
+
+
+class AutowalkConfirmationTests(unittest.TestCase):
+    def test_game_autowalk_flag(self):
+        self.assertFalse(
+            _game_reports_autowalking({"movement": {"is_auto_walking": False}})
+        )
+        self.assertTrue(
+            _game_reports_autowalking({"movement": {"is_auto_walking": True}})
+        )
 
 if __name__ == "__main__":
     unittest.main()

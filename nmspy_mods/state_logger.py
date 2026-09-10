@@ -21,8 +21,7 @@ import os
 import time
 import traceback
 
-from pymhf import FUNCDEF, Mod
-from pymhf.core.hooking import Structure, manual_hook, static_function_hook
+from pymhf import Mod
 from pymhf.gui import FLOAT
 from pymhf.gui.decorators import STRING
 
@@ -56,6 +55,10 @@ _COSMOS_PLANET_NAME_OFFSET = 0x3AAE
 # code.  The pre-Cosmos nmspy layout is now shifted by 0x1C, not 0x20.
 _COSMOS_ENV_LOCATION_OFFSET = 0x474
 _COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x480
+# These cave values were used by the previously working Cosmos build.
+_COSMOS_ENV_CAVE_LOCATION_OFFSET = 0x478
+_COSMOS_ENV_CAVE_LOCATION_STABLE_OFFSET = 0x484
+CAVE_CONFIRM_SECONDS = 3.0
 
 # Cosmos inserted 0x400 bytes at the front of cGcPlayerState.  AwardUnits in
 # the current executable accesses Units/Nanites at +0x89C/+0x8A0, confirming
@@ -97,30 +100,9 @@ LOCATION_STATES = {
     EnvironmentLocation.Enum.Anomaly: "ANOMALY",
 }
 
-_live_player_ptr = None
-_live_player_addr = 0
-_live_player_update_count = 0
-
-_live_env_ptr = None
-_live_env_addr = 0
-_live_env_update_count = 0
-
 _live_game_state_ptr = None
 _live_game_state_addr = 0
 _live_game_state_update_count = 0
-
-
-class _EngineCosmos(Structure):
-    @static_function_hook(
-        "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
-        "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
-    )
-    @staticmethod
-    def GetNodePhysRelMatrix(
-        result: ctypes._Pointer[basic.cTkPhysRelMat34],
-        node: ctypes.c_uint32,
-    ):
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -444,24 +426,12 @@ def _valid_player_name(name):
 
 def _get_live_player():
     try:
-        if _live_player_ptr:
-            return _live_player_ptr.contents
-    except Exception:
-        pass
-
-    try:
         return gameData.player
     except Exception:
         return None
 
 
 def _get_live_environment():
-    try:
-        if _live_env_ptr:
-            return _live_env_ptr.contents
-    except Exception:
-        pass
-
     try:
         return gameData.player_environment
     except Exception:
@@ -495,47 +465,19 @@ def _get_player_state():
 
 
 def _read_player_position_from_environment(env=None):
+    # Cosmos expanded mPlayerTM from cTkMatrix34 to cTkPhysRelMat34.  Position
+    # is the sum of its local and offset halves.
     try:
         if env is None:
             env = _get_live_environment()
-
         if env is None:
             return None
 
-        mat = env.mPlayerTM
-
-        if not _matrix_looks_valid(mat):
-            return None
-
-        return _round_pos(mat.pos)
-
-    except Exception:
-        return None
-
-
-def _read_player_position_from_live_player():
-    # Cosmos returns the physical-relative transform through an explicit result
-    # pointer.  Use the player's root node and combine both halves of cTkBigPos
-    # so movement/stuck detection receives real world coordinates.
-    try:
-        player = _get_live_player()
-        if player is None:
-            return None
-
-        node = int(player.mRootNode.lookupInt) & 0xFFFFFFFF
-        if node in (0, 0xFFFFFFFF):
-            return None
-
-        matrix = basic.cTkPhysRelMat34()
-        _EngineCosmos.GetNodePhysRelMatrix(
-            ctypes.byref(matrix),
-            ctypes.c_uint32(node),
-        )
-        pos = matrix.pos
+        matrix = basic.cTkPhysRelMat34.from_address(ctypes.addressof(env))
         values = (
-            float(pos.local.x) + float(pos.offset.x),
-            float(pos.local.y) + float(pos.offset.y),
-            float(pos.local.z) + float(pos.offset.z),
+            float(matrix.pos.local.x) + float(matrix.pos.offset.x),
+            float(matrix.pos.local.y) + float(matrix.pos.offset.y),
+            float(matrix.pos.local.z) + float(matrix.pos.offset.z),
         )
         if not all(_valid_float(value) for value in values):
             return None
@@ -547,15 +489,6 @@ def _read_player_position_from_live_player():
         }
     except Exception:
         return None
-
-
-def _read_player_position_from_sim():
-    pos = _read_player_position_from_live_player()
-
-    if pos is not None:
-        return pos
-
-    return _read_player_position_from_environment()
 
 
 def _state_from_location(loc):
@@ -799,9 +732,6 @@ def _gather_environment_data(env=None):
 
         pos = _read_player_position_from_environment(env)
 
-        if pos is None:
-            pos = _read_player_position_from_live_player()
-
         if pos is not None:
             result["player_position"] = pos
 
@@ -826,6 +756,8 @@ def _gather_environment_data(env=None):
 
         loc_val = None
         stable_val = None
+        cave_loc_val = None
+        cave_stable_val = None
         env_address = ctypes.addressof(env)
 
         try:
@@ -857,9 +789,27 @@ def _gather_environment_data(env=None):
             pass
 
         try:
+            cave_loc_val = ctypes.c_uint32.from_address(
+                env_address + _COSMOS_ENV_CAVE_LOCATION_OFFSET
+            ).value
+        except Exception:
+            pass
+
+        try:
+            cave_stable_val = ctypes.c_uint32.from_address(
+                env_address + _COSMOS_ENV_CAVE_LOCATION_STABLE_OFFSET
+            ).value
+        except Exception:
+            pass
+
+        try:
+            result["_cave_candidate"] = (
+                cave_loc_val == int(EnvironmentLocation.Enum.Cave)
+            )
             result["is_in_cave"] = (
                 loc_val == int(EnvironmentLocation.Enum.Cave)
                 or stable_val == int(EnvironmentLocation.Enum.Cave)
+                or cave_stable_val == int(EnvironmentLocation.Enum.Cave)
             )
         except Exception:
             result["is_in_cave"] = False
@@ -1096,7 +1046,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.8-cosmos-direct-environment"
+    __version__ = "1.14-cosmos-cave-confirmed"
 
     state = NMSModState()
 
@@ -1109,6 +1059,7 @@ class StateLogger(Mod):
     _last_good_movement: dict = {}
     _last_good_universe_address: dict = {}
     _path_logged: bool = False
+    _cave_candidate_since: float | None = None
 
     @property
     @STRING("Current State:")
@@ -1150,8 +1101,7 @@ class StateLogger(Mod):
         _slog.info(
             "PLANET_SELECT terrain_idx=%s standing_idx=%s ga_raw_idx=%s ga_idx=%s "
             "reality=%s galaxy=%s source=%s env_raw_idx=%s env_idx=%s cached=%s "
-            "live_env_updates=%s live_game_state_updates=%s live_player_updates=%s "
-            "location=%s location_stable=%s is_in_cave=%s",
+            "live_game_state_updates=%s location=%s location_stable=%s is_in_cave=%s",
             terrain_idx,
             self._standing_planet_idx,
             ga_raw_idx,
@@ -1162,9 +1112,7 @@ class StateLogger(Mod):
             env_raw_idx,
             env_idx,
             sorted(self._planet_ptrs.keys()),
-            _live_env_update_count,
             _live_game_state_update_count,
-            _live_player_update_count,
             self._last_env_data.get("location_raw"),
             self._last_env_data.get("location_stable_raw"),
             self._last_env_data.get("is_in_cave"),
@@ -1226,69 +1174,9 @@ class StateLogger(Mod):
         except Exception:
             _slog.warning("_cache_planet source=%s failed: %s", source, traceback.format_exc())
 
-    @staticmethod
-    def _capture_environment(this):
-        """Retain the live environment pointer supplied by the game itself.
-
-        NMSpy's gameData.player_environment property depends on its application
-        pointer having been populated before this mod polls it.  On a clean
-        Cosmos launch that chain can remain unavailable even though
-        cGcPlayerEnvironment is actively updating.  The callback's ``this``
-        pointer is authoritative and survives that initialization ordering.
-        """
-        global _live_env_ptr, _live_env_addr, _live_env_update_count
-        try:
-            env_ptr = ctypes.cast(this, ctypes.POINTER(nms.cGcPlayerEnvironment))
-            env_addr = ctypes.addressof(env_ptr.contents)
-            if env_addr:
-                _live_env_ptr = env_ptr
-                _live_env_addr = env_addr
-                _live_env_update_count += 1
-        except Exception:
-            pass
-
-    @nms.cGcPlayerEnvironment.Update.before
-    def on_player_environment_update(self, this, lf_time_step):
-        self._capture_environment(this)
-
-    @nms.cGcPlayerEnvironment.IsOnPlanet.before
-    def on_player_environment_is_on_planet(self, this):
-        # IsOnPlanet is used as a second acquisition path because it continues
-        # to be called in several states where Environment::Update may pause.
-        self._capture_environment(this)
-
-    @manual_hook(
-        "StateLogger.CosmosCheckFallenThroughFloor",
-        pattern=(
-            "40 55 41 57 48 8D AC 24 ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? "
-            "4C 8B F9 83 B8 ? ? ? ? ? 0F 85"
-        ),
-        func_def=FUNCDEF(None, [ctypes.c_void_p]),
-        detour_time="before",
-    )
-    def on_player_floor_check(self, this):
-        global _live_player_ptr, _live_player_addr, _live_player_update_count
-        try:
-            player_ptr = ctypes.cast(this, ctypes.POINTER(nms.cGcPlayer))
-            _live_player_ptr = player_ptr
-            _live_player_addr = ctypes.addressof(player_ptr.contents)
-            _live_player_update_count += 1
-        except Exception:
-            pass
-
     @on_fully_booted
     def on_game_booted(self):
-        global _live_player_ptr, _live_player_addr, _live_player_update_count
-        global _live_env_ptr, _live_env_addr, _live_env_update_count
         global _live_game_state_ptr, _live_game_state_addr, _live_game_state_update_count
-
-        _live_player_ptr = None
-        _live_player_addr = 0
-        _live_player_update_count = 0
-
-        _live_env_ptr = None
-        _live_env_addr = 0
-        _live_env_update_count = 0
 
         _live_game_state_ptr = None
         _live_game_state_addr = 0
@@ -1304,6 +1192,7 @@ class StateLogger(Mod):
         self._last_good_movement = {}
         self._last_good_universe_address = {}
         self._path_logged = False
+        self._cave_candidate_since = None
 
     @nms.cGcPlanet.SetupRegionMap.after
     def on_planet_setup(self, this: ctypes._Pointer[nms.cGcPlanet]):
@@ -1326,11 +1215,24 @@ class StateLogger(Mod):
     @nms.cGcApplication.Update.after
     def on_main_loop(self, this):
         try:
-            pos = _read_player_position_from_sim()
             pe = _get_live_environment()
+            pos = _read_player_position_from_environment(pe)
 
             if pe is not None:
                 env_data = _gather_environment_data(pe)
+
+                cave_candidate = bool(env_data.pop("_cave_candidate", False))
+                if env_data.get("is_in_cave"):
+                    self._cave_candidate_since = None
+                elif cave_candidate:
+                    now = time.time()
+                    if self._cave_candidate_since is None:
+                        self._cave_candidate_since = now
+                    env_data["is_in_cave"] = (
+                        now - self._cave_candidate_since >= CAVE_CONFIRM_SECONDS
+                    )
+                else:
+                    self._cave_candidate_since = None
 
                 # The Cosmos cGcPlayerEnvironment layout can yield an orientation
                 # vector at the historical mPlayerTM offset.  Always prefer the

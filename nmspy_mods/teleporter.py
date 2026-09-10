@@ -132,6 +132,17 @@ def _read_location_dict():
     }
 
 
+def _location_matches_destination(current, destination, reality_idx):
+    return bool(current) and (
+        current["planet"] == destination["planet"] + 1
+        and current["reality"] == reality_idx
+        and all(
+            current[name] == destination[name]
+            for name in ("system", "voxel_x", "voxel_y", "voxel_z")
+        )
+    )
+
+
 def _tread_location(label):
     try:
         loc = _get_location()
@@ -391,7 +402,7 @@ def _flush_deferred_teleport(state):
 class Teleporter(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Random and portal-address teleporter"
-    __version__ = "2.0.0-transient-two-stage"
+    __version__ = "2.1.0-skip-redundant-second-warp"
 
     state = NMSModState()
     _portal_component = None
@@ -465,9 +476,8 @@ class Teleporter(Mod):
             _tlog.warning("[PORTAL] A teleport is already in progress")
             return
 
-        # Each command starts clean. The raw warp exists only to make NMS
-        # initialize a real portal component; that fresh component immediately
-        # performs the final, planet-correct warp.
+        # Each command starts clean. Usually the raw warp reaches the requested
+        # destination itself; a captured native component is kept as fallback.
         self._clear_portal_component("starting fresh two-stage warp")
         self._clear_raw_component("starting fresh two-stage warp")
         self._pending_portal_request = {
@@ -584,9 +594,21 @@ class Teleporter(Mod):
             self._clear_portal_transaction("timed out after %.1fs" % age)
             return
 
-        # The bootstrap buffer must be out of use and the first load complete
-        # before the freshly captured game component starts the native warp.
+        # Wait until the bootstrap load has finished before deciding whether
+        # its captured native component is needed for a fallback warp.
         if self.state.loading or self._raw_portal_buffer is not None:
+            return
+        current = _read_location_dict()
+        if _location_matches_destination(
+            current,
+            pending["destination"],
+            pending["reality"],
+        ):
+            _tlog.info(
+                "[PORTAL] Bootstrap warp reached destination; skipping redundant native warp: %s",
+                current,
+            )
+            self._clear_portal_transaction("bootstrap reached destination")
             return
         if self._portal_component is None:
             return

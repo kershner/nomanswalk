@@ -154,8 +154,11 @@ def _probe_player_node_tree(player, maximum=160):
     if not image_base:
         raise RuntimeError("NMS module base is unavailable")
 
-    # Current Cosmos node-manager global, verified from the getters above.
-    manager = ctypes.c_void_p.from_address(image_base + 0x6E0C098).value
+    # Current node-manager global, verified from the exact
+    # Engine.GetNodeAbsoluteTransMatrix match in the 2026-09-10 executable.
+    manager = ctypes.c_void_p.from_address(image_base + 0x6E13DC8).value
+    if not manager:
+        raise RuntimeError("scene-node manager is unavailable")
     lookup = ctypes.c_void_p.from_address(manager + 0xE8).value
     records = ctypes.c_void_p.from_address(manager + 0x70).value
     objects = ctypes.c_void_p.from_address(manager + 0x90).value
@@ -555,7 +558,7 @@ def _finish_pose(camera, pose, basis):
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent exact selfie camera pose."
-    __version__ = "2.7-cosmos-camera-buffers"
+    __version__ = "2.8-patch-node-manager"
 
     def __init__(self):
         super().__init__()
