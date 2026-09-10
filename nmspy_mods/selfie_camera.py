@@ -63,6 +63,10 @@ CAMERA_PROFILES = {
 }
 
 _log = _make_logger("SelfieCamera", "selfie_camera.log")
+_PLAYER_MODEL_SCENE = "MODELS/COMMON/PLAYER/PLAYERCHARACTER/PLAYERCHARACTER.SCENE.MBIN"
+_PLAYER_CAMERA_ANCHOR = "player01_spine_TopSHJnt"
+_player_model_handle = None
+_player_anchor_handle = None
 
 
 class _BigPosMatrix34(ctypes.Structure):
@@ -71,6 +75,18 @@ class _BigPosMatrix34(ctypes.Structure):
         ("up", basic.Vector3f),
         ("at", basic.Vector3f),
         ("pos", basic.cTkPhysRelVec3),
+    ]
+
+
+class _CosmosCamera(ctypes.Structure):
+    # Cosmos keeps the exposed/current, committed/render, and previous camera
+    # transforms consecutively.  PhotoModeCameraBehaviour.Update commits via
+    # the engine setter at +0x50, so changing only +0x00 no longer reaches the
+    # transform consumed by rendering.
+    _fields_ = [
+        ("current", _BigPosMatrix34),
+        ("committed", _BigPosMatrix34),
+        ("previous", _BigPosMatrix34),
     ]
 
 
@@ -83,11 +99,23 @@ class _PhotoModeCameraBehaviour(Structure):
         self,
         this: "ctypes._Pointer[_PhotoModeCameraBehaviour]",
         lfTimeStep: Annotated[float, ctypes.c_float],
-        camera: ctypes.POINTER(basic.cTkPhysRelMat34),
+        camera: ctypes.POINTER(_CosmosCamera),
     ) -> None: ...
 
 
 class _EngineCosmos(Structure):
+    @static_function_hook(
+        "40 57 48 83 EC 20 49 8B F8 44 8B C1 41 C1 E8 13 45 85 C0 "
+        "0F 84 ? ? ? ? 8B C1 25 FF FF 07 00 3D FF FF 07 00 0F 84 ? ? ? ? "
+        "81 E1 FF FF 07 00 48 89 5C 24 30 48 8B 1D ? ? ? ?"
+    )
+    @staticmethod
+    def GetNodeMatrices(
+        node: ctypes.c_uint32,
+        local: ctypes.c_void_p,
+        absolute: ctypes._Pointer[basic.cTkMatrix34],
+    ) -> None: ...
+
     @static_function_hook(
         "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
         "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
@@ -105,6 +133,133 @@ def _get_player_matrix(player):
         ctypes.byref(matrix),
         ctypes.c_uint32(int(player.mRootNode.lookupInt)),
     )
+    return matrix
+
+
+def _get_player_absolute_matrix(player):
+    matrix = basic.cTkMatrix34()
+    _EngineCosmos.GetNodeMatrices(
+        ctypes.c_uint32(int(player.mRootNode.lookupInt)),
+        ctypes.c_void_p(),
+        ctypes.byref(matrix),
+    )
+    return matrix
+
+
+def _probe_player_node_tree(player, maximum=160):
+    """Read a bounded snapshot of the live player graphics-node hierarchy."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+    image_base = kernel32.GetModuleHandleW("NMS.exe")
+    if not image_base:
+        raise RuntimeError("NMS module base is unavailable")
+
+    # Current Cosmos node-manager global, verified from the getters above.
+    manager = ctypes.c_void_p.from_address(image_base + 0x6E0C098).value
+    lookup = ctypes.c_void_p.from_address(manager + 0xE8).value
+    records = ctypes.c_void_p.from_address(manager + 0x70).value
+    objects = ctypes.c_void_p.from_address(manager + 0x90).value
+    root_handle = int(player.mRootNode.lookupInt)
+    root_index = ctypes.c_int32.from_address(
+        lookup + (root_handle & 0x7FFFF) * 4
+    ).value
+
+    def node_details(index):
+        obj = ctypes.c_void_p.from_address(objects + index * 8).value
+        handle = ctypes.c_uint32.from_address(obj + 8).value
+        owner = ctypes.c_void_p.from_address(obj + 0x20).value
+        string = ctypes.c_void_p.from_address(owner).value if owner else None
+        name = ""
+        if string:
+            length = ctypes.c_size_t.from_address(string + 0x18).value
+            chars = (
+                ctypes.c_void_p.from_address(string).value
+                if length > 15
+                else string
+            )
+            if chars and length < 1024:
+                name = ctypes.string_at(chars, length).decode(errors="replace")
+                name = name.split("\x00", 1)[0]
+        matrix = basic.cTkMatrix34()
+        _EngineCosmos.GetNodeMatrices(
+            ctypes.c_uint32(handle), ctypes.c_void_p(), ctypes.byref(matrix)
+        )
+        record = records + index * 20
+        first_child = ctypes.c_int32.from_address(record + 8).value
+        next_sibling = ctypes.c_int32.from_address(record + 0x10).value
+        return handle, name, _xyz(matrix.pos), first_child, next_sibling
+
+    rows = []
+    stack = [(root_index, 0)]
+    seen = set()
+    while stack and len(rows) < maximum:
+        index, depth = stack.pop()
+        if index < 0 or index in seen:
+            continue
+        seen.add(index)
+        handle, name, position, child, sibling = node_details(index)
+        rows.append((depth, index, handle, name, position))
+        if sibling >= 0:
+            stack.append((sibling, depth))
+        if child >= 0:
+            stack.append((child, depth + 1))
+    return rows
+
+
+def _get_player_model_matrix(player):
+    """Return player-facing axes positioned on the rendered upper torso."""
+    global _player_model_handle, _player_anchor_handle
+
+    if _player_model_handle is not None and _player_anchor_handle is not None:
+        matrix = basic.cTkMatrix34()
+        anchor = basic.cTkMatrix34()
+        _EngineCosmos.GetNodeMatrices(
+            ctypes.c_uint32(_player_model_handle),
+            ctypes.c_void_p(),
+            ctypes.byref(matrix),
+        )
+        _EngineCosmos.GetNodeMatrices(
+            ctypes.c_uint32(_player_anchor_handle),
+            ctypes.c_void_p(),
+            ctypes.byref(anchor),
+        )
+        if (
+            _length(_xyz(matrix.right)) >= 0.001
+            and _length(_xyz(anchor.right)) >= 0.001
+        ):
+            _set_vector(matrix.pos, _xyz(anchor.pos))
+            return matrix
+        _player_model_handle = None
+        _player_anchor_handle = None
+
+    for _depth, _index, handle, name, _position in _probe_player_node_tree(
+        player, maximum=5000
+    ):
+        if name == _PLAYER_MODEL_SCENE:
+            _player_model_handle = handle
+        elif name == _PLAYER_CAMERA_ANCHOR:
+            _player_anchor_handle = handle
+
+    if _player_model_handle is None:
+        raise RuntimeError("animated player model node was not found")
+    if _player_anchor_handle is None:
+        raise RuntimeError("animated player torso anchor was not found")
+
+    _log.info(
+        "Resolved player camera reference model=%#x anchor=%#x (%s)",
+        _player_model_handle,
+        _player_anchor_handle,
+        _PLAYER_CAMERA_ANCHOR,
+    )
+    matrix = basic.cTkMatrix34()
+    anchor = basic.cTkMatrix34()
+    _EngineCosmos.GetNodeMatrices(
+        ctypes.c_uint32(_player_model_handle), ctypes.c_void_p(), ctypes.byref(matrix)
+    )
+    _EngineCosmos.GetNodeMatrices(
+        ctypes.c_uint32(_player_anchor_handle), ctypes.c_void_p(), ctypes.byref(anchor)
+    )
+    _set_vector(matrix.pos, _xyz(anchor.pos))
     return matrix
 
 
@@ -187,12 +342,17 @@ def _local(vector, basis):
     return [_dot(vector, axis) for axis in basis]
 
 
-def _player_basis(player):
-    matrix = _get_player_matrix(player)
+def _camera_basis(camera):
+    matrix = camera.contents.committed
     return tuple(
         _normalise(_xyz(axis))
         for axis in (matrix.right, matrix.up, matrix.at)
     )
+
+
+def _camera_transforms(camera):
+    contents = camera.contents
+    return (contents.current, contents.committed, contents.previous)
 
 
 def _photo_mode_fov_slot():
@@ -284,8 +444,12 @@ def _capture_pose(camera, basis):
     if player is None:
         raise RuntimeError("player is unavailable")
 
-    player_matrix = _get_player_matrix(player)
-    camera_matrix = camera.contents
+    player_matrix = _get_player_model_matrix(player)
+    basis = tuple(
+        _normalise(_xyz(axis))
+        for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
+    )
+    camera_matrix = camera.contents.committed
     camera_position = tuple(
         local + offset
         for local, offset in zip(
@@ -293,7 +457,7 @@ def _capture_pose(camera, basis):
             _xyz(camera_matrix.pos.offset),
         )
     )
-    player_position = _big_position_xyz(player_matrix.pos)
+    player_position = _xyz(player_matrix.pos)
     position_delta = _subtract(camera_position, player_position)
     _log.info(
         "Selfie capture probe player=%s camera=%s delta=%s distance=%.6f",
@@ -323,28 +487,40 @@ def _apply_pose(camera, pose, basis, set_position=True):
     if player is None:
         raise RuntimeError("player is unavailable")
 
-    player_matrix = _get_player_matrix(player)
-    camera_matrix = camera.contents
+    player_matrix = _get_player_model_matrix(player)
+    basis = tuple(
+        _normalise(_xyz(axis))
+        for axis in (player_matrix.right, player_matrix.up, player_matrix.at)
+    )
+    camera_matrices = _camera_transforms(camera)
 
-    _set_vector(camera_matrix.right, _normalise(_to_world(pose["right"], basis)))
-    _set_vector(camera_matrix.up, _normalise(_to_world(pose["up"], basis)))
-    _set_vector(camera_matrix.at, _normalise(_to_world(pose["at"], basis)))
+    world_right = _normalise(_to_world(pose["right"], basis))
+    world_up = _normalise(_to_world(pose["up"], basis))
+    world_at = _normalise(_to_world(pose["at"], basis))
+    for camera_matrix in camera_matrices:
+        _set_vector(camera_matrix.right, world_right)
+        _set_vector(camera_matrix.up, world_up)
+        _set_vector(camera_matrix.at, world_at)
 
     relative_position = _to_world(pose["position"], basis)
-    player_position = _big_position_xyz(player_matrix.pos)
+    player_position = _xyz(player_matrix.pos)
     desired_position = tuple(
         player_position[index] + relative_position[index]
         for index in range(3)
     )
     if set_position:
-        big_position_offset = _xyz(camera_matrix.pos.offset)
-        _set_vector(camera_matrix.pos.local, _subtract(desired_position, big_position_offset))
+        for camera_matrix in camera_matrices:
+            big_position_offset = _xyz(camera_matrix.pos.offset)
+            _set_vector(
+                camera_matrix.pos.local,
+                _subtract(desired_position, big_position_offset),
+            )
     _set_photo_mode_fov(pose["fov"])
     return player_position, desired_position
 
 
 def _finish_pose(camera, pose, basis):
-    camera_matrix = camera.contents
+    camera_matrix = camera.contents.committed
     actual_position = tuple(
         local + offset
         for local, offset in zip(
@@ -358,24 +534,14 @@ def _finish_pose(camera, pose, basis):
         basis,
         set_position=False,
     )
-    actual_delta = _subtract(actual_position, player_position)
-    desired_delta = _subtract(desired_position, player_position)
-    desired_distance_squared = _dot(desired_delta, desired_delta)
-    projection = _dot(actual_delta, desired_delta) / desired_distance_squared
-    perpendicular = _subtract(
-        actual_delta,
-        tuple(projection * value for value in desired_delta),
-    )
-
-    # Collision may shorten the camera arm, but native camera drift must not
-    # move it materially above, below, or beside the calibrated line.
-    collision_position = (
-        0.0 <= projection <= 1.05
-        and _length(perpendicular) <= 0.2
-    )
-    if not collision_position:
-        offset = _xyz(camera_matrix.pos.offset)
-        _set_vector(camera_matrix.pos.local, _subtract(desired_position, offset))
+    # The native update can ease the camera toward its own arm position.  That
+    # movement was previously accepted whenever it happened to lie near the
+    # player-to-camera ray, which made a valid F11 calibration settle at a
+    # different point.  The selfie contract is now exact: native code may run
+    # between the hooks, but the calibrated position wins on every frame.
+    for transform in _camera_transforms(camera):
+        offset = _xyz(transform.pos.offset)
+        _set_vector(transform.pos.local, _subtract(desired_position, offset))
     final_position = tuple(
         local + offset
         for local, offset in zip(
@@ -383,13 +549,13 @@ def _finish_pose(camera, pose, basis):
             _xyz(camera_matrix.pos.offset),
         )
     )
-    return collision_position, actual_position, final_position, player_position, desired_position
+    return actual_position, final_position, player_position, desired_position
 
 
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
-    __description__ = "Apply the permanent collision-aware selfie camera pose."
-    __version__ = "1.5-stable-photo-session-basis"
+    __description__ = "Apply the permanent exact selfie camera pose."
+    __version__ = "2.7-cosmos-camera-buffers"
 
     def __init__(self):
         super().__init__()
@@ -417,15 +583,30 @@ class SelfieCamera(Mod):
         self._pose = None
         self._ready_published = False
 
-    def _prepare_photo_session(self):
-        """Latch the pre-animation-drift player basis once per photo session."""
+    def _prepare_photo_session(self, camera):
+        """Latch the native entry-camera basis once per photo session."""
         now = time.monotonic()
         if self._photo_session_basis is None or now - self._last_photo_frame_at > 1.0:
-            player = gameData.player
-            if player is None:
-                raise RuntimeError("player is unavailable")
-            self._photo_session_basis = _player_basis(player)
-            _log.info("Selfie photo-session basis latched: %s", self._photo_session_basis)
+            self._photo_session_basis = _camera_basis(camera)
+            _log.info(
+                "Selfie photo-entry camera basis latched: %s",
+                self._photo_session_basis,
+            )
+            try:
+                player = gameData.player
+                phys_relative = _get_player_matrix(player)
+                absolute = _get_player_absolute_matrix(player)
+                _log.info(
+                    "Selfie player transforms handle=%#x phys_relative=%s absolute=%s "
+                    "phys_position=%s absolute_position=%s",
+                    int(player.mRootNode.lookupInt),
+                    tuple(_xyz(axis) for axis in (phys_relative.right, phys_relative.up, phys_relative.at)),
+                    tuple(_xyz(axis) for axis in (absolute.right, absolute.up, absolute.at)),
+                    _big_position_xyz(phys_relative.pos),
+                    _xyz(absolute.pos),
+                )
+            except Exception:
+                _log.exception("Could not probe selfie player node buffers")
         self._last_photo_frame_at = now
         return self._photo_session_basis
 
@@ -468,7 +649,7 @@ class SelfieCamera(Mod):
     @_PhotoModeCameraBehaviour.Update.before
     def before_photo_camera_update(self, this, lfTimeStep, camera):
         try:
-            basis = self._prepare_photo_session()
+            basis = self._prepare_photo_session(camera)
             self._poll_request()
             if not self._request_id:
                 return
@@ -508,7 +689,6 @@ class SelfieCamera(Mod):
             if self._pose is None:
                 raise RuntimeError("selfie camera pose is unavailable")
             (
-                collision_position,
                 native_position,
                 final_position,
                 player_position,
@@ -517,12 +697,11 @@ class SelfieCamera(Mod):
             if self._ready_frames == 0:
                 _log.info(
                     "Selfie camera position player=%s desired=%s native=%s final=%s "
-                    "collision_accepted=%s local_pose=%s",
+                    "local_pose=%s",
                     player_position,
                     desired_position,
                     native_position,
                     final_position,
-                    collision_position,
                     self._pose["position"],
                 )
         except Exception as error:
