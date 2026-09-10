@@ -52,7 +52,6 @@ STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
-STUCK_RECOVERY_RESET_SECONDS = 90  # sustained normal movement ends an escalation chain
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
 RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
@@ -489,12 +488,7 @@ def check_if_stuck(state, data):
     elapsed = now - _last_move_t
 
     if d >= STUCK_EPS:
-        _last_xy, _last_move_t, _stuck = cur, now, False
-        # Jetting or turning inside a dug hole can exceed STUCK_EPS without
-        # actually escaping. Preserve the recovery stage for a short window so
-        # a new stuck trigger escalates instead of starting with jet forever.
-        if now - _last_unstuck_t >= STUCK_RECOVERY_RESET_SECONDS:
-            _stuck_last_cmd = None
+        _last_xy, _last_move_t, _stuck, _stuck_last_cmd = cur, now, False, None
         return
 
     if (not _stuck) and elapsed >= STUCK_SECONDS:
