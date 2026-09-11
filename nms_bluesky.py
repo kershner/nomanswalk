@@ -13,12 +13,12 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from io import BytesIO
 from PIL import Image, ImageOps
+from nms_bluesky_tags import select_video_tags
 from utils import get_info_text
 from urllib.parse import quote
 import requests
 import httpx
 import logging
-import random
 import re
 import time
 import json
@@ -38,24 +38,8 @@ class PublishedMedia:
     media_type: str
     text: str
 
-TAG_GROUPS = (
-    ("DIY", "Maker", "Tech", "Electronics", "DIYTech"),
-    ("automation", "Coding", "python", "programming", "CreativeCoding", "PythonDev", "BuildInPublic"),
-    (
-        "exploration", "SciFi", "SpaceGame", "twitch", "interactive", "gaming",
-        "PCGaming", "games", "VirtualWorlds", "gamescreenshots", "streaming",
-        "VirtualPhotography", "NoMansHigh", "HelloGames", "gamedev", "videogames",
-        "AlienWorlds", "Exoplanets", "Space", "ProceduralGeneration", "CozyGaming",
-        "CozyGames",
-    ),
-    ("chill", "cozy", "Ambient", "chillstream", "ChillGaming", "Lofi"),
-)
-TAGS_POOL = tuple(dict.fromkeys(tag for group in TAG_GROUPS for tag in group))
-
 def _pick_tags():
-    chosen = [random.choice(group) for group in TAG_GROUPS]
-    chosen.append(random.choice([tag for tag in TAGS_POOL if tag not in chosen]))
-    return ["NoMansSky", "nms"] + chosen
+    return select_video_tags()
 
 
 def _load_params(params_file="parameters.json"):
@@ -391,6 +375,7 @@ def post_clip(bsky_client: Client, params_file="parameters.json", countdown: str
         record = {
             "text": full_text,
             "createdAt": bsky_client.get_current_time_iso(),
+            "langs": ["en"],
             "facets": facets,
             "embed": {
                 "$type": "app.bsky.embed.video",

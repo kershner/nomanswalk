@@ -11,6 +11,7 @@ MODS/
 *.log
 .nmspy_mods.py.cache/
 bsky_export/
+bluesky_tag_pool.json
 selfie_camera_capture.json
 selfie_camera_request.json
 selfie_camera_status.json

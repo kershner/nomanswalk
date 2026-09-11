@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from twitchio.ext import commands
 from typing import Optional
 import nms_bluesky
+import nms_bluesky_tags
 import nms_threads
 import subprocess
 import psutil
@@ -336,6 +337,7 @@ class NMSBot(commands.Bot):
 
         self._bsky = None
         self._bluesky_post_task: Optional[asyncio.Task] = None
+        self._bluesky_tag_audit_task: Optional[asyncio.Task] = None
         self._bsky_post_lock = asyncio.Lock()
 
         self._teleport_interval_s = 4 * 3600  # 4 hours
@@ -431,6 +433,14 @@ class NMSBot(commands.Bot):
             if self._bsky and (self._bluesky_post_task is None or self._bluesky_post_task.done()):
                 self._bluesky_post_task = asyncio.create_task(self._fixed_bluesky_post_loop())
                 log("Bluesky scheduler: fixed-time post loop started.")
+
+            if self._bsky and (
+                self._bluesky_tag_audit_task is None
+                or self._bluesky_tag_audit_task.done()
+            ):
+                self._bluesky_tag_audit_task = asyncio.create_task(
+                    self._refresh_bluesky_tags_if_stale()
+                )
 
         if run_startup:
             log("Startup sequence: beginning...")
@@ -1100,6 +1110,23 @@ class NMSBot(commands.Bot):
             next_times.append(candidate)
 
         return min(next_times)
+
+    async def _refresh_bluesky_tags_if_stale(self):
+        """Refresh the local tag pool at startup when it is at least a week old."""
+        if not nms_bluesky_tags.pool_is_stale():
+            log("Bluesky tag audit: saved pool is still current.")
+            return
+        try:
+            client = await asyncio.to_thread(nms_bluesky.login)
+            payload = await asyncio.to_thread(
+                nms_bluesky_tags.refresh_tag_pool,
+                client,
+                client.me.did,
+            )
+            tags = ", ".join(item["tag"] for item in payload["tags"])
+            log(f"Bluesky tag audit: updated rotating pool: {tags}")
+        except Exception as e:
+            log(f"Bluesky tag audit failed; keeping existing pool: {e}")
 
     async def _fixed_bluesky_post_loop(self):
         if not Config.BLUESKY_POST_TIMES:
