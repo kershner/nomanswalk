@@ -408,6 +408,34 @@ def _round_pos(pos):
     }
 
 
+def _pointer_address(value):
+    return int(value.value if hasattr(value, "value") else value or 0)
+
+
+def _translate(text):
+    """Translate an NMS localization key using the live language manager."""
+    key = (text or "").strip()
+    if not key:
+        return ""
+
+    try:
+        manager_address = _pointer_address(nms.cTkLanguageManager.GetInstance())
+        if not manager_address:
+            return key
+
+        manager = nms.cTkLanguageManagerBase.from_address(manager_address)
+        source = ctypes.create_string_buffer(key.encode("utf-8"))
+        result = manager.Translate(ctypes.addressof(source), None)
+        translated_address = _pointer_address(result)
+        if not translated_address:
+            return key
+
+        translated = ctypes.string_at(translated_address).decode("utf-8", errors="replace").strip()
+        return translated or key
+    except Exception:
+        return key
+
+
 def _player_state_address():
     """Return the live cGcPlayerState base address, if currently readable."""
     try:
@@ -891,6 +919,16 @@ def _gather_planet_data(planet_ptr):
             except Exception:
                 return None
 
+        description_key = _str(info.PlanetDescription)
+        planet_type_key = _str(info.PlanetType)
+        weather_key = _str(info.Weather)
+        flora_key = _str(info.Flora)
+        fauna_key = _str(info.Fauna)
+        resources_key = _str(info.Resources)
+        sentinel_key = _str(info.SentinelsPerDifficulty[0])
+        planet_type = _translate(planet_type_key)
+        description = _translate(description_key).replace("%PLANETCLASS%", planet_type)
+
         return {
             "name": name,
             "biome": _enum_name(pgid.Biome.__class__, _read_enum32(pgid.Biome)),
@@ -898,12 +936,13 @@ def _gather_planet_data(planet_ptr):
             "has_rings": bool(pd.Rings.HasRings),
             "is_prime": bool(pgid.Prime),
             "in_pirate_system": bool(pgid.InPirateSystem),
-            "description": _str(info.PlanetDescription),
-            "planet_type": _str(info.PlanetType),
-            "weather_label": _str(info.Weather),
-            "flora_label": _str(info.Flora),
-            "fauna_label": _str(info.Fauna),
-            "resources_label": _str(info.Resources),
+            "description": description,
+            "planet_type": planet_type,
+            "weather_label": _translate(weather_key),
+            "flora_label": _translate(flora_key),
+            "fauna_label": _translate(fauna_key),
+            "resources_label": _translate(resources_key),
+            "sentinel_label": _translate(sentinel_key),
             "is_extreme_weather": bool(info.IsWeatherExtreme),
             "weather_type": _enum_name(
                 weather_data.WeatherType.__class__,
@@ -1046,7 +1085,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.14-cosmos-cave-confirmed"
+    __version__ = "1.15-localized-planet-info"
 
     state = NMSModState()
 

@@ -277,16 +277,22 @@ def _build_selfie_caption(viewer, state):
     galaxy = get_galaxy_name(galaxy_number) if galaxy_number else ""
 
     planet_name = planet.get("name") or "an unknown world"
+    description = planet.get("description") or planet.get("biome")
+    if description:
+        description = description.replace(
+            "%PLANETCLASS%",
+            planet.get("planet_type") or "planet",
+        )
     details = [f"Selfie requested by Twitch viewer twitch.tv/{viewer}"]
     if galaxy:
         details.append(f"Galaxy: {galaxy}")
-    for label, key in (
-        ("Biome", "biome"),
-        ("Size", "planet_size"),
-        ("Weather", "weather_type"),
+    for label, value in (
+        ("Biome", description),
+        ("Size", planet.get("planet_size")),
+        ("Weather", planet.get("weather_label") or planet.get("weather_type")),
     ):
-        if planet.get(key):
-            details.append(f"{label}: {planet[key]}")
+        if value:
+            details.append(f"{label}: {value}")
 
     suffix = f" • 🔴twitch.tv/{Config.TWITCH_CHANNEL}"
     body = f"Greetings from {planet_name}!\n\n{' • '.join(details)}"
@@ -1290,7 +1296,10 @@ class NMSBot(commands.Bot):
         await self._do_info(ctx)
 
     async def _do_info(self, ctx, announce=True):
-        info = get_info_text(countdown=self._format_countdown())
+        info = get_info_text(
+            countdown=self._format_countdown(),
+            include_planet_details=True,
+        )
         title = info.split(" • Today:", 1)[0]
         if announce:
             await self._say(ctx, f"🪐{info}")

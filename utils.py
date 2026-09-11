@@ -142,7 +142,21 @@ def _get_galaxy_name(state: dict) -> str | None:
     return _last_galaxy_name
 
 
-def get_info_text(countdown: str = "") -> str:
+def _planet_description(planet: dict) -> str:
+    description = planet.get("description") or planet.get("biome") or ""
+    return description.replace("%PLANETCLASS%", planet.get("planet_type") or "planet")
+
+
+def _planet_environment_details(planet: dict) -> list[str]:
+    fields = (
+        ("Weather", planet.get("weather_label") or planet.get("weather_type")),
+        ("Flora", planet.get("flora_label") or planet.get("life")),
+        ("Fauna", planet.get("fauna_label") or planet.get("creature_life")),
+    )
+    return [f"{label}: {value}" for label, value in fields if value]
+
+
+def get_info_text(countdown: str = "", include_planet_details: bool = False) -> str:
     try:
         state, stats = _get_status_state()
         planet = state.get("planet", {})
@@ -158,7 +172,7 @@ def get_info_text(countdown: str = "") -> str:
             activity = "In space"
         else:
             name = planet.get("name")
-            biome = planet.get("biome")
+            biome = _planet_description(planet)
             activity = f"Walking across {name}" if name else "Walking across a planet"
             if biome:
                 activity += f" ({biome})"
@@ -168,6 +182,8 @@ def get_info_text(countdown: str = "") -> str:
         parts = [activity]
         if galaxy_name and location in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
             parts.append(f"Galaxy: {galaxy_name}")
+        if include_planet_details and location not in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
+            parts.extend(_planet_environment_details(planet))
         if countdown:
             parts.append(f"Next planet vote in {countdown}")
         today = []
@@ -213,12 +229,8 @@ def get_location_text() -> str:
             name = solar_system.get("name")
             return with_galaxy(f"In space ({name} system)" if name else "In space")
 
-        mods = state.get("mods", {})
         name = planet.get("name")
-        biome = planet.get("biome")
-        weather = planet.get("weather_type", "")
-        flora = planet.get("life", "")
-        fauna = planet.get("creature_life", "")
+        biome = _planet_description(planet)
         activity = name or "A planet"
         if biome:
             activity += f" ({biome})"
@@ -226,12 +238,16 @@ def get_location_text() -> str:
         details = " • ".join(filter(None, [
             f"Size: {planet.get('planet_size')}" if planet.get("planet_size") else "",
             "Ringed" if planet.get("has_rings") else "",
-            f"Weather: {weather}" if weather else "",
-            f"Flora: {flora}" if flora else "",
-            f"Fauna: {fauna}" if fauna else "",
-            f"Gravity: {mods.get('gravity', 'normal').title()}",
-            f"Storming: {'Yes' if mods.get('storm', 'normal') == 'forced' else 'No'}",
-            f"Time: {mods.get('time', 'normal').title()}",
+            f"Weather: {planet.get('weather_label') or planet.get('weather_type')}"
+            if planet.get("weather_label") or planet.get("weather_type") else "",
+            f"Flora: {planet.get('flora_label') or planet.get('life')}"
+            if planet.get("flora_label") or planet.get("life") else "",
+            f"Fauna: {planet.get('fauna_label') or planet.get('creature_life')}"
+            if planet.get("fauna_label") or planet.get("creature_life") else "",
+            f"Resources: {planet.get('resources_label')}"
+            if planet.get("resources_label") else "",
+            f"Sentinels: {planet.get('sentinel_label') or planet.get('sentinel_level')}"
+            if planet.get("sentinel_label") or planet.get("sentinel_level") else "",
         ]))
 
         text = with_galaxy(activity)

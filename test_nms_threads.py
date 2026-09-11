@@ -52,6 +52,31 @@ class SelfieCaptionTests(unittest.TestCase):
         self.assertIn(" • Biome: Scorched • Size: Medium • Weather: Scorched", caption)
         self.assertTrue(caption.endswith(" • 🔴twitch.tv/nomanswalk"))
 
+    def test_caption_uses_descriptive_values_without_adding_fields(self):
+        caption = _build_selfie_caption(
+            "billcrystals",
+            {
+                "planet": {
+                    "name": "Onoeleto Prime",
+                    "description": "Airless %PLANETCLASS%",
+                    "planet_type": "Planet",
+                    "planet_size": "Medium",
+                    "weather_label": "Perfectly Clear",
+                    "flora_label": "Barren",
+                    "fauna_label": "Absent",
+                    "resources_label": "Intermittent",
+                    "sentinel_label": "Intermittent",
+                },
+            },
+        )
+
+        self.assertIn("Biome: Airless Planet", caption)
+        self.assertIn("Weather: Perfectly Clear", caption)
+        self.assertNotIn("Flora:", caption)
+        self.assertNotIn("Fauna:", caption)
+        self.assertNotIn("Resources:", caption)
+        self.assertNotIn("Sentinels:", caption)
+
 class ThreadsPublishingTests(unittest.TestCase):
     @patch("nms_threads._request")
     @patch("nms_threads._fresh_tokens")

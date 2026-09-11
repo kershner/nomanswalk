@@ -50,7 +50,7 @@ class SelfieConfig:
 
 STUCK_USE_Z = True
 STUCK_EPS = 10.0         # movement threshold
-STUCK_SECONDS = 8        # time without movement
+STUCK_SECONDS = 10       # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
 PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
@@ -396,7 +396,6 @@ def is_state_snapshot_fresh(data: dict, now: float | None = None) -> bool:
 def poll_state():
     global _autowalk_enabled
 
-    last_processed_timestamp = None
     stale_logged = False
 
     while True:
@@ -424,14 +423,6 @@ def poll_state():
 
             state = get_coarse_player_state(data)
             NMSState.update(state, ts, data)
-
-            # StateLogger publishes every few seconds while this poller reads
-            # once per second. A repeated snapshot is not another stationary
-            # movement sample and must never advance the stuck timer.
-            if ts == last_processed_timestamp:
-                time.sleep(STATE_POLL_INTERVAL)
-                continue
-            last_processed_timestamp = ts
 
             update_daily_movement(state, data)
 
@@ -466,10 +457,6 @@ def check_if_stuck(state, data):
     global _last_xy, _last_move_t, _stuck, _stuck_last_cmd
 
     if state != "ON_FOOT" or not is_walking():
-        _reset_stuck()
-        return
-
-    if not _game_reports_autowalking(data):
         _reset_stuck()
         return
 
