@@ -57,7 +57,7 @@ TELEPORT_REQUEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 _tlog = _make_logger("Teleporter", "random_teleporter.log")
-_fsm_state_str = basic.cTkFixedString[0x10]()
+_fsm_state_str = basic.cTkFixedString[0x10]("")
 
 _live_game_state_ptr = None
 _live_game_state_update_count = 0

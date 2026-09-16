@@ -1,5 +1,5 @@
 # /// script
-# dependencies = ["nmspy==170671.5", "pymhf[gui]==0.2.4"]
+# dependencies = ["nmspy==179105.0", "pymhf[gui]==0.2.4"]
 #
 # [tool.pymhf]
 # exe = "NMS.exe"
@@ -31,6 +31,7 @@ import nmspy.data.types as nms
 from nmspy.data.enums import EnvironmentLocation
 from nmspy.decorators import on_state_change, on_fully_booted
 from nmspy.common import gameData
+from nmspy.engine import GetNodeAbsoluteTransMatrix
 
 from shared_state import (
     NMSModState,
@@ -56,8 +57,8 @@ _COSMOS_PLANET_NAME_OFFSET = 0x3AAE
 _COSMOS_ENV_LOCATION_OFFSET = 0x474
 _COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x480
 # These cave values were used by the previously working Cosmos build.
-_COSMOS_ENV_CAVE_LOCATION_OFFSET = 0x478
-_COSMOS_ENV_CAVE_LOCATION_STABLE_OFFSET = 0x484
+_COSMOS_ENV_CAVE_LOCATION_OFFSET = 0x468
+_COSMOS_ENV_CAVE_LOCATION_STABLE_OFFSET = 0x474
 CAVE_CONFIRM_SECONDS = 3.0
 
 # Cosmos inserted 0x400 bytes at the front of cGcPlayerState.  AwardUnits in
@@ -413,25 +414,12 @@ def _pointer_address(value):
 
 
 def _translate(text):
-    """Translate an NMS localization key using the live language manager."""
     key = (text or "").strip()
     if not key:
         return ""
 
     try:
-        manager_address = _pointer_address(nms.cTkLanguageManager.GetInstance())
-        if not manager_address:
-            return key
-
-        manager = nms.cTkLanguageManagerBase.from_address(manager_address)
-        source = ctypes.create_string_buffer(key.encode("utf-8"))
-        result = manager.Translate(ctypes.addressof(source), None)
-        translated_address = _pointer_address(result)
-        if not translated_address:
-            return key
-
-        translated = ctypes.string_at(translated_address).decode("utf-8", errors="replace").strip()
-        return translated or key
+        return nms.cTkLanguageManager.Translate(key) or key
     except Exception:
         return key
 
@@ -493,20 +481,13 @@ def _get_player_state():
 
 
 def _read_player_position_from_environment(env=None):
-    # Cosmos expanded mPlayerTM from cTkMatrix34 to cTkPhysRelMat34.  Position
-    # is the sum of its local and offset halves.
     try:
-        if env is None:
-            env = _get_live_environment()
-        if env is None:
+        player = _get_live_player()
+        if player is None:
             return None
 
-        matrix = basic.cTkPhysRelMat34.from_address(ctypes.addressof(env))
-        values = (
-            float(matrix.pos.local.x) + float(matrix.pos.offset.x),
-            float(matrix.pos.local.y) + float(matrix.pos.offset.y),
-            float(matrix.pos.local.z) + float(matrix.pos.offset.z),
-        )
+        pos = GetNodeAbsoluteTransMatrix(player.mRootNode).pos
+        values = (float(pos.x), float(pos.y), float(pos.z))
         if not all(_valid_float(value) for value in values):
             return None
 
@@ -552,14 +533,11 @@ def _normalize_planet_index(raw_idx):
 
 def _read_raw_ga_values():
     try:
-        address = _player_state_address()
-
-        if not address:
+        player_state = _get_player_state()
+        if player_state is None:
             return None
 
-        loc = nmse.cGcUniverseAddressData.from_address(
-            address + _COSMOS_PLAYER_LOCATION_OFFSET
-        )
+        loc = player_state.mLocation
         ga = loc.GalacticAddress
 
         return {
@@ -569,7 +547,7 @@ def _read_raw_ga_values():
             "voxel_y": int(ga.VoxelY),
             "voxel_z": int(ga.VoxelZ),
             "reality_index": int(loc.RealityIndex),
-            "source": "live_game_state.mPlayerState.mLocation",
+            "source": "gameData.player_state.mLocation",
         }
 
     except Exception:
@@ -612,49 +590,29 @@ def _read_planet_index_from_environment(env=None):
 
 def _gather_player_data(current_state):
     try:
-        address = _player_state_address()
-
-        if not address:
+        player_state = _get_player_state()
+        if player_state is None:
             return {}
 
-        name_value = basic.cTkFixedString0x100.from_address(
-            address + _COSMOS_PLAYER_NAME_OFFSET
-        )
-        name = _str(name_value).strip()
-        health = ctypes.c_int32.from_address(
-            address + _COSMOS_PLAYER_HEALTH_OFFSET
-        ).value
-        shield = ctypes.c_int32.from_address(
-            address + _COSMOS_PLAYER_SHIELD_OFFSET
-        ).value
-
+        health = int(player_state.miHealth)
+        shield = int(player_state.miShield)
         if not (0 <= health < 50_000_000 and 0 <= shield < 50_000_000):
             return {}
 
         result = {
             "health": health,
             "shield": shield,
-            "units": ctypes.c_uint32.from_address(
-                address + _COSMOS_PLAYER_UNITS_OFFSET
-            ).value,
-            "nanites": ctypes.c_uint32.from_address(
-                address + _COSMOS_PLAYER_NANITES_OFFSET
-            ).value,
-            "quicksilver": ctypes.c_uint32.from_address(
-                address + _COSMOS_PLAYER_SPECIALS_OFFSET
-            ).value,
+            "units": int(player_state.muUnits),
+            "nanites": int(player_state.muNanites),
+            "quicksilver": int(player_state.muSpecials),
         }
 
-        # Cosmos changed the leading name storage independently of the numeric
-        # fields.  Do not let an unreadable cosmetic field invalidate the rest
-        # of an otherwise coherent player snapshot.
+        name = _str(player_state.mNameWithTitle).strip()
         if _valid_player_name(name):
             result["name"] = name
 
         if current_state == "IN_COCKPIT":
-            result["ship_health"] = max(0, ctypes.c_int32.from_address(
-                address + _COSMOS_PLAYER_SHIP_HEALTH_OFFSET
-            ).value)
+            result["ship_health"] = max(0, int(player_state.miShipHealth))
 
         return result
 
@@ -899,7 +857,7 @@ def _gather_planet_data(planet_ptr):
         if not planet_ptr:
             return {}
 
-        pd = _planet_struct_at(planet_ptr, _COSMOS_PLANET_DATA_OFFSET, nmse.cGcPlanetData)
+        pd = planet_ptr.contents.mPlanetData
         pgid = _planet_struct_at(
             planet_ptr,
             _COSMOS_PLANET_GENERATION_INPUT_OFFSET,
@@ -931,7 +889,7 @@ def _gather_planet_data(planet_ptr):
 
         return {
             "name": name,
-            "biome": _enum_name(pgid.Biome.__class__, _read_enum32(pgid.Biome)),
+            "biome": _translate(_enum_name(pgid.Biome.__class__, _read_enum32(pgid.Biome))),
             "planet_size": _enum_name(pgid.PlanetSize.__class__, _read_enum32(pgid.PlanetSize)),
             "has_rings": bool(pd.Rings.HasRings),
             "is_prime": bool(pgid.Prime),

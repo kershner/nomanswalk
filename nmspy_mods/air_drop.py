@@ -5,31 +5,15 @@ import os
 import traceback
 
 from pymhf import Mod
-from pymhf.core.hooking import Structure, on_key_pressed, static_function_hook
+from pymhf.core.hooking import on_key_pressed
 
 import nmspy.data.basic_types as basic
 import nmspy.data.types as nms
 from nmspy.common import gameData
 
 
-class _PlayerCosmos(Structure):
-    @static_function_hook(
-        "48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC ? "
-        "48 8B FA 48 8B D9 48 8B 15 ? ? ? ? 48 8D 0D ? ? ? ? 49 8B F1 49 8B E8"
-    )
-    @staticmethod
-    def SetToPosition(
-        player: ctypes.c_void_p,
-        position: ctypes._Pointer[basic.cTkBigPos],
-        direction: ctypes._Pointer[basic.cTkVector3],
-        velocity: ctypes._Pointer[basic.cTkVector3],
-    ):
-        pass
-
-
 TELEPORT_FEET = 1000.0
 FEET_TO_GAME_UNITS = 0.3048
-_COSMOS_ENV_UP_OFFSET = 0x50
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "air_drop.log")
 
@@ -103,7 +87,7 @@ def _matrix_looks_valid(mat) -> bool:
 class AirDrop(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Press Y to teleport the player up away from the planet."
-    __version__ = "2.6-cosmos-player-offset"
+    __version__ = "2.8-official-nmspy"
 
     def __init__(self):
         super().__init__()
@@ -138,26 +122,26 @@ class AirDrop(Mod):
             return None
 
     def _get_position_and_direction(self):
-        env = self._get_environment()
-        if env is None:
+        player = self._get_player()
+        if player is None:
             return None, None
 
-        matrix = basic.cTkPhysRelMat34.from_address(ctypes.addressof(env))
-        pos = matrix.pos
-        facing = matrix.at
-        local = pos.local
-        offset = pos.offset
-        if not all(
-            _valid_float(value)
-            for value in (
-                local.x, local.y, local.z,
-                offset.x, offset.y, offset.z,
-            )
-        ):
+        try:
+            pos = player.mGraphicsMatrix.pos
+            facing = player.mGraphicsMatrix.at
+            if not all(
+                _valid_float(value)
+                for value in (
+                    pos.local.x, pos.local.y, pos.local.z,
+                    pos.offset.x, pos.offset.y, pos.offset.z,
+                )
+            ):
+                return None, None
+            if not _vector_looks_valid(float(facing.x), float(facing.y), float(facing.z)):
+                return None, None
+            return pos, facing
+        except Exception:
             return None, None
-        if not _vector_looks_valid(float(facing.x), float(facing.y), float(facing.z)):
-            return None, None
-        return pos, facing
 
     @on_key_pressed("f4")
     def probe_position(self):
@@ -201,13 +185,7 @@ class AirDrop(Mod):
 
         if env is not None:
             try:
-                # Cosmos expanded the transform at the start of
-                # cGcPlayerEnvironment. nmspy's historical +0x40 mUp field
-                # now aliases the player's absolute position; the actual
-                # outward unit vector moved to +0x50.
-                up = basic.Vector3f.from_address(
-                    ctypes.addressof(env) + _COSMOS_ENV_UP_OFFSET
-                )
+                up = env.mUp
                 ux = float(up.x)
                 uy = float(up.y)
                 uz = float(up.z)
@@ -319,8 +297,7 @@ class AirDrop(Mod):
                 new_pos.local.z,
             )
 
-            _PlayerCosmos.SetToPosition(
-                ctypes.c_void_p(ctypes.addressof(player)),
+            player.SetToPosition(
                 ctypes.byref(new_pos),
                 ctypes.byref(direction),
                 ctypes.byref(velocity),
