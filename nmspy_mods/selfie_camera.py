@@ -154,9 +154,26 @@ def _probe_player_node_tree(player, maximum=160):
     if not image_base:
         raise RuntimeError("NMS module base is unavailable")
 
-    # Current node-manager global, verified from the exact
-    # Engine.GetNodeAbsoluteTransMatrix match in the 2026-09-10 executable.
-    manager = ctypes.c_void_p.from_address(image_base + 0x6E13DC8).value
+    # Resolve the node-manager global from the live GetNodeMatrices function.
+    # The global moves between NMS patches, so do not keep an executable offset.
+    dos = ctypes.c_uint32.from_address(image_base + 0x3C).value
+    nt = image_base + dos
+    image_size = ctypes.c_uint32.from_address(nt + 0x50).value
+    image = ctypes.string_at(image_base, image_size)
+    signature = bytes.fromhex(
+        "40 57 48 83 EC 20 49 8B F8 44 8B C1 41 C1 E8 13 45 85 C0"
+    )
+    function_offset = image.find(signature)
+    if function_offset < 0:
+        raise RuntimeError("GetNodeMatrices signature was not found")
+    manager_load = image.find(b"\x48\x8b\x1d", function_offset, function_offset + 160)
+    if manager_load < 0:
+        raise RuntimeError("scene-node manager reference was not found")
+    displacement = ctypes.c_int32.from_buffer_copy(
+        image[manager_load + 3 : manager_load + 7]
+    ).value
+    manager_global = image_base + manager_load + 7 + displacement
+    manager = ctypes.c_void_p.from_address(manager_global).value
     if not manager:
         raise RuntimeError("scene-node manager is unavailable")
     lookup = ctypes.c_void_p.from_address(manager + 0xE8).value
