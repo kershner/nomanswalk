@@ -1083,21 +1083,6 @@ def gravity(args=None):
     send_key("f10", 0.1)
 
 
-def _resume_walk_after_teleport():
-    """Try autowalk twice, stopping if NMS reports that it engaged."""
-    global _autowalk_enabled
-
-    for _ in range(2):
-        _autowalk_enabled = False
-        walk()
-        time.sleep(TELEPORT_WALK_CONFIRM_SECONDS)
-        if _game_reports_autowalking():
-            return
-        log("Teleport: autowalk did not engage; retrying.")
-    log("Teleport: autowalk did not engage; stuck checks remain disabled.")
-    _autowalk_enabled = False
-    _reset_stuck()
-
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     set_planet_loading(True)
@@ -1107,10 +1092,9 @@ def _do_teleport(key, label):
         time.sleep(PLANET_LOAD_SECONDS)
         stop()
         time.sleep(0.1)
-        _resume_walk_after_teleport()
+        walk()
     finally:
-        set_planet_loading(False)
-        
+        set_planet_loading(False)        
 
     log(f"{label}: planet load wait complete.")
     
