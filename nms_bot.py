@@ -53,8 +53,7 @@ STUCK_EPS = 10.0         # movement threshold
 STUCK_SECONDS = 10       # time without movement
 STUCK_COOLDOWN = 15      # min seconds between unstuck attempts
 
-PLANET_LOAD_SECONDS = 50 # how long to wait for a new planet to load after teleport
-TELEPORT_WALK_CONFIRM_SECONDS = 3
+PLANET_LOAD_SECONDS = 60 # how long to wait for a new planet to load after teleport
 RUNTIME_STATE_FILE = os.path.join(BASE_DIR, "runtime_state.json")
 MAX_WALK_SAMPLE_DISTANCE = 500.0
 
