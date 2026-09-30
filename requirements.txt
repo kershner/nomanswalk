@@ -35,7 +35,7 @@ libipld==3.3.2
 MarkupSafe==3.0.3
 MouseInfo==0.1.3
 multidict==6.7.1
-nmspy==179105.0
+nmspy==180132.0
 obsws-python==1.8.0
 packaging==26.0
 pefile==2024.8.26

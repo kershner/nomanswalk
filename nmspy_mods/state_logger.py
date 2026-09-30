@@ -1,5 +1,5 @@
 # /// script
-# dependencies = ["nmspy==179105.0", "pymhf[gui]==0.2.4"]
+# dependencies = ["nmspy==180132.0", "pymhf[gui]==0.2.4"]
 #
 # [tool.pymhf]
 # exe = "NMS.exe"
