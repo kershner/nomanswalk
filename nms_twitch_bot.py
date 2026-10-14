@@ -7,7 +7,7 @@ from nms_bot import (
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
     has_selfie_planet_upload, is_planet_loading, is_walking,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
-    release_selfie_camera, set_runtime_game_state,
+    release_selfie_camera, set_runtime_game_state, post_daily_planets,
     start_selfie_gesture, start_state_poller, walk,
 )
 from galaxy_names import get_galaxy_name
@@ -65,6 +65,7 @@ class Config:
     SHUTDOWN_HOUR = 0             # 0 = midnight; change to e.g. 2 for 2 AM EST
     SHUTDOWN_MINUTE = 0
     SHUTDOWN_TZ = "US/Eastern"
+    PLANET_REPORT_MINUTES_BEFORE_SHUTDOWN = 10
     
     STREAM_TAGS = [
         "Exploration",
@@ -159,6 +160,14 @@ class Config:
     @classmethod
     def get_client_secret(cls) -> str:
         return str(cls.load_params().get("CLIENT_SECRET", "")).strip()
+
+    @classmethod
+    def get_planet_report_endpoint(cls) -> str:
+        return str(cls.load_params().get("PLANET_REPORT_ENDPOINT", "")).strip()
+
+    @classmethod
+    def get_planet_report_bearer_token(cls) -> str:
+        return str(cls.load_params().get("PLANET_REPORT_BEARER_TOKEN", "")).strip()
 
     @classmethod
     def get_admin_users(cls):
@@ -1055,6 +1064,7 @@ class NMSBot(commands.Bot):
         )
         last_warning_date = None
         last_shutdown_date = None
+        last_planet_report_date = None
 
         while True:
             try:
@@ -1070,6 +1080,31 @@ class NMSBot(commands.Bot):
                 minutes_until = int((shutdown_next - now).total_seconds() // 60)
 
                 channel = self.get_channel(Config.TWITCH_CHANNEL)
+
+                # Send the day's unique planet records 30 minutes before shutdown.
+                if (
+                    0 < minutes_until <= Config.PLANET_REPORT_MINUTES_BEFORE_SHUTDOWN
+                    and last_planet_report_date != now.date()
+                ):
+                    endpoint = Config.get_planet_report_endpoint()
+                    bearer_token = Config.get_planet_report_bearer_token()
+                    if not endpoint or not bearer_token:
+                        last_planet_report_date = now.date()
+                        log("Nightly planet report: endpoint or bearer token is not configured; skipping.")
+                    else:
+                        try:
+                            payload = await asyncio.to_thread(
+                                post_daily_planets,
+                                endpoint,
+                                bearer_token,
+                            )
+                            last_planet_report_date = now.date()
+                            log(
+                                "Nightly planet report: posted "
+                                f"{len(payload['planets'])} planet(s)."
+                            )
+                        except Exception as e:
+                            log(f"Nightly planet report failed; will retry: {e}")
 
                 # ── 10-minute warning ──────────────────────────────────────
                 if 0 < minutes_until <= 10 and last_warning_date != now.date():
@@ -1326,8 +1361,12 @@ class NMSBot(commands.Bot):
         info = get_info_text(
             countdown=self._format_countdown(),
             include_planet_details=True,
+            include_portal=True,
         )
-        title = info.split(" • Today:", 1)[0]
+        title = get_info_text(
+            countdown=self._format_countdown(),
+            include_planet_details=True,
+        ).split(" • Today:", 1)[0]
         if announce:
             await self._say(ctx, f"🪐{info}")
         await self._refresh_stream_presence(title)
@@ -1367,7 +1406,7 @@ class NMSBot(commands.Bot):
         await self._do_location(ctx)
 
     async def _do_location(self, ctx, mark_recent=True):
-        await self._say(ctx, f"🌎{get_location_text()}")
+        await self._say(ctx, f"🌎{get_location_text(include_portal=True)}")
         if mark_recent:
             self._last_location_announcement_at = time.monotonic()
 

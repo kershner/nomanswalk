@@ -1,4 +1,4 @@
-from utils import focus_nms, send_key, log
+from utils import focus_nms, send_key, log, get_planet_hex
 from command_block_lists import blocked_commands_for_state, resolve_command_state
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +16,7 @@ import time
 import math
 import os
 import uuid
+import requests
 
 # ---------------------------------------------------------------------------
 # Config
@@ -92,6 +93,7 @@ def _new_daily_stats():
         "date": _today(),
         "distance_walked": 0.0,
         "planets": [],
+        "planet_details": {},
         "walkers": [],
         "commands": 0,
         "selfie_uploads": 0,
@@ -138,6 +140,10 @@ def _ensure_daily_stats():
         _daily_last_planet = None
         _daily_last_state = None
         _save_daily_stats()
+    elif not isinstance(_daily_stats.get("planet_details"), dict):
+        # Older runtime state files only retained planet identity keys.
+        _daily_stats["planet_details"] = {}
+        _save_daily_stats()
 
 
 def _load_daily_stats():
@@ -161,6 +167,96 @@ def _planet_key(data):
     return ":".join(str(v) for v in values)
 
 
+def _planet_hex(data):
+    return get_planet_hex(data)
+
+
+def _planet_visit_timestamp(data):
+    timezone = pytz.timezone("US/Eastern")
+    try:
+        timestamp = float(data.get("timestamp"))
+        if math.isfinite(timestamp) and timestamp > 0:
+            return datetime.fromtimestamp(timestamp, timezone).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError, OverflowError):
+        pass
+    return datetime.now(timezone).isoformat(timespec="seconds")
+
+
+def _planet_report_item(data):
+    """Return the agreed flat API representation of the current planet."""
+    planet = data.get("planet") or {}
+    ua = data.get("universe_address") or {}
+    planet_hex = _planet_hex(data)
+    name = planet.get("name")
+
+    if not planet_hex or not name:
+        return None
+
+    galaxy_index = ua.get("galaxy_number")
+    if galaxy_index is None:
+        try:
+            galaxy_index = int(ua["reality_index"]) + 1
+        except (KeyError, TypeError, ValueError):
+            galaxy_index = None
+
+    return {
+        "timestamp": _planet_visit_timestamp(data),
+        "planet_hex": planet_hex,
+        "name": name,
+        "galaxy_name": ua.get("galaxy_name"),
+        "galaxy_index": galaxy_index,
+        "biome": planet.get("biome"),
+        "weather": planet.get("weather_label"),
+        "flora": planet.get("flora_label"),
+        "fauna": planet.get("fauna_label"),
+        "sentinels": planet.get("sentinel_label"),
+        "has_rings": planet.get("has_rings"),
+    }
+
+
+def get_daily_planets_payload():
+    """Return today's unique visited planets in first-visit order."""
+    with _daily_stats_lock:
+        _ensure_daily_stats()
+        details = _daily_stats.get("planet_details", {})
+        planets = []
+        for key in _daily_stats.get("planets", []):
+            if key not in details:
+                continue
+            item = dict(details[key])
+            if not item.get("timestamp"):
+                item["timestamp"] = datetime.now(
+                    pytz.timezone("US/Eastern")
+                ).isoformat(timespec="seconds")
+            try:
+                # The identity key starts with the zero-based reality index.
+                item["galaxy_index"] = int(key.split(":", 1)[0]) + 1
+            except (AttributeError, TypeError, ValueError):
+                pass
+            planets.append(item)
+        return {"planets": planets}
+
+
+def post_daily_planets(endpoint, bearer_token, timeout=15):
+    """POST today's planet list and raise if the endpoint rejects it."""
+    endpoint = str(endpoint or "").strip()
+    bearer_token = str(bearer_token or "").strip()
+    if not endpoint:
+        raise ValueError("Planet report endpoint is not configured.")
+    if not bearer_token:
+        raise ValueError("Planet report bearer token is not configured.")
+
+    payload = get_daily_planets_payload()
+    response = requests.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": f"Bearer {bearer_token}"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return payload
+
+
 def update_daily_movement(state, data):
     global _daily_last_position, _daily_last_planet, _daily_last_state
 
@@ -170,8 +266,22 @@ def update_daily_movement(state, data):
         env = data.get("environment") or {}
 
         if planet_key and (state == "ON_FOOT" or env.get("inside_atmosphere") is True):
+            changed = False
             if planet_key not in _daily_stats["planets"]:
                 _daily_stats["planets"].append(planet_key)
+                changed = True
+
+            report_item = _planet_report_item(data)
+            if report_item is not None:
+                details = _daily_stats["planet_details"]
+                existing = details.get(planet_key)
+                if existing and existing.get("timestamp"):
+                    report_item["timestamp"] = existing["timestamp"]
+                if details.get(planet_key) != report_item:
+                    details[planet_key] = report_item
+                    changed = True
+
+            if changed:
                 _save_daily_stats()
 
         pos = env.get("player_position") or {}

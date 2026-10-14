@@ -147,6 +147,30 @@ def _planet_description(planet: dict) -> str:
     return description.replace("%PLANETCLASS%", planet.get("planet_type") or "planet")
 
 
+def get_planet_hex(state: dict) -> str | None:
+    """Build the current planet's 12-character portal address."""
+    ua = state.get("universe_address") or {}
+    try:
+        planet = int(ua["planet_index"])
+        system = int(ua["solar_system_index"])
+        voxel_y = int(ua["voxel_y"])
+        voxel_z = int(ua["voxel_z"])
+        voxel_x = int(ua["voxel_x"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if not (0 <= planet <= 5 and 0 <= system <= 0xFFF):
+        return None
+
+    return (
+        f"{planet + 1:X}"
+        f"{system:03X}"
+        f"{voxel_y & 0xFF:02X}"
+        f"{voxel_z & 0xFFF:03X}"
+        f"{voxel_x & 0xFFF:03X}"
+    )
+
+
 def _planet_environment_details(planet: dict) -> list[str]:
     fields = (
         ("Weather", planet.get("weather_label") or planet.get("weather_type")),
@@ -156,7 +180,11 @@ def _planet_environment_details(planet: dict) -> list[str]:
     return [f"{label}: {value}" for label, value in fields if value]
 
 
-def get_info_text(countdown: str = "", include_planet_details: bool = False) -> str:
+def get_info_text(
+    countdown: str = "",
+    include_planet_details: bool = False,
+    include_portal: bool = False,
+) -> str:
     try:
         state, stats = _get_status_state()
         planet = state.get("planet", {})
@@ -179,6 +207,10 @@ def get_info_text(countdown: str = "", include_planet_details: bool = False) -> 
         galaxy_name = _get_galaxy_name(state)
         if galaxy_name and location not in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
             activity += f" • Galaxy: {galaxy_name}"
+        if include_portal and location not in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
+            planet_hex = get_planet_hex(state)
+            if planet_hex:
+                activity += f" • Portal: {planet_hex}"
         parts = [activity]
         if galaxy_name and location in ("NEXUS", "ANOMALY", "FREIGHTER", "SPACE_STATION", "IN_COCKPIT"):
             parts.append(f"Galaxy: {galaxy_name}")
@@ -207,7 +239,7 @@ def get_info_text(countdown: str = "", include_planet_details: bool = False) -> 
         return "Could not read game state."
 
 
-def get_location_text() -> str:
+def get_location_text(include_portal: bool = False) -> str:
     try:
         state, _ = _get_status_state()
         location = state.get("state")
@@ -251,6 +283,10 @@ def get_location_text() -> str:
         ]))
 
         text = with_galaxy(activity)
+        if include_portal:
+            planet_hex = get_planet_hex(state)
+            if planet_hex:
+                text += f" • Portal: {planet_hex}"
         return f"{text} • {details}" if details else text
     except Exception as e:
         log(f"get_location_text failed: {e}")
