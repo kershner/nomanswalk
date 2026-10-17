@@ -15,3 +15,6 @@ bluesky_tag_pool.json
 selfie_camera_capture.json
 selfie_camera_request.json
 selfie_camera_status.json
+planet_report_outbox.json
+planet_report_outbox.json.tmp
+planet_report_outbox.json.lock

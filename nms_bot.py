@@ -16,7 +16,7 @@ import time
 import math
 import os
 import uuid
-import requests
+from planet_reports import daily_planets, queue_planets, upload_pending
 
 # ---------------------------------------------------------------------------
 # Config
@@ -135,6 +135,7 @@ def _save_daily_stats():
 def _ensure_daily_stats():
     global _daily_stats, _daily_last_position, _daily_last_planet, _daily_last_state
     if _daily_stats.get("date") != _today():
+        queue_planets(daily_planets(_daily_stats), only_missing=True)
         _daily_stats = _new_daily_stats()
         _daily_last_position = None
         _daily_last_planet = None
@@ -150,6 +151,7 @@ def _load_daily_stats():
     global _daily_stats
     daily = _read_runtime_state().get("daily")
     _daily_stats = daily if isinstance(daily, dict) else _new_daily_stats()
+    queue_planets(daily_planets(_daily_stats), only_missing=True)
     _ensure_daily_stats()
 
 def _planet_key(data):
@@ -199,7 +201,7 @@ def _planet_report_item(data):
         except (KeyError, TypeError, ValueError):
             galaxy_index = None
 
-    return {
+    item = {
         "timestamp": _planet_visit_timestamp(data),
         "planet_hex": planet_hex,
         "name": name,
@@ -210,51 +212,23 @@ def _planet_report_item(data):
         "flora": planet.get("flora_label"),
         "fauna": planet.get("fauna_label"),
         "sentinels": planet.get("sentinel_label"),
-        "has_rings": planet.get("has_rings"),
     }
+    if planet.get("has_rings") is not None:
+        item["has_rings"] = planet["has_rings"]
+    return item
 
 
 def get_daily_planets_payload():
     """Return today's unique visited planets in first-visit order."""
     with _daily_stats_lock:
         _ensure_daily_stats()
-        details = _daily_stats.get("planet_details", {})
-        planets = []
-        for key in _daily_stats.get("planets", []):
-            if key not in details:
-                continue
-            item = dict(details[key])
-            if not item.get("timestamp"):
-                item["timestamp"] = datetime.now(
-                    pytz.timezone("US/Eastern")
-                ).isoformat(timespec="seconds")
-            try:
-                # The identity key starts with the zero-based reality index.
-                item["galaxy_index"] = int(key.split(":", 1)[0]) + 1
-            except (AttributeError, TypeError, ValueError):
-                pass
-            planets.append(item)
-        return {"planets": planets}
+        return {"planets": daily_planets(_daily_stats)}
 
 
-def post_daily_planets(endpoint, bearer_token, timeout=15):
-    """POST today's planet list and raise if the endpoint rejects it."""
-    endpoint = str(endpoint or "").strip()
-    bearer_token = str(bearer_token or "").strip()
-    if not endpoint:
-        raise ValueError("Planet report endpoint is not configured.")
-    if not bearer_token:
-        raise ValueError("Planet report bearer token is not configured.")
-
-    payload = get_daily_planets_payload()
-    response = requests.post(
-        endpoint,
-        json=payload,
-        headers={"Authorization": f"Bearer {bearer_token}"},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    return payload
+def post_daily_planets(endpoint, api_token, timeout=15):
+    """Compatibility wrapper for the shared durable uploader."""
+    queue_planets(get_daily_planets_payload()["planets"])
+    return upload_pending(endpoint, api_token, timeout=timeout)
 
 
 def update_daily_movement(state, data):
@@ -282,6 +256,7 @@ def update_daily_movement(state, data):
                     changed = True
 
             if changed:
+                queue_planets([report_item] if report_item is not None else [])
                 _save_daily_stats()
 
         pos = env.get("player_position") or {}

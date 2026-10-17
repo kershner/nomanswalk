@@ -7,7 +7,7 @@ from nms_bot import (
     get_runtime_game_state, has_daily_selfie_upload, is_command_allowed,
     has_selfie_planet_upload, is_planet_loading, is_walking,
     position_selfie_camera, record_daily_command, record_daily_selfie_upload,
-    release_selfie_camera, set_runtime_game_state, post_daily_planets,
+    release_selfie_camera, set_runtime_game_state,
     start_selfie_gesture, start_state_poller, walk,
 )
 from galaxy_names import get_galaxy_name
@@ -166,8 +166,8 @@ class Config:
         return str(cls.load_params().get("PLANET_REPORT_ENDPOINT", "")).strip()
 
     @classmethod
-    def get_planet_report_bearer_token(cls) -> str:
-        return str(cls.load_params().get("PLANET_REPORT_BEARER_TOKEN", "")).strip()
+    def get_planet_report_api_token(cls) -> str:
+        return str(cls.load_params().get("no_mans_walk_api_token", "")).strip()
 
     @classmethod
     def get_admin_users(cls):
@@ -1071,40 +1071,29 @@ class NMSBot(commands.Bot):
                 tz = pytz.timezone(Config.SHUTDOWN_TZ)
                 now = datetime.now(tz)
 
-                shutdown_next = (now + timedelta(days=1)).replace(
-                    hour=Config.SHUTDOWN_HOUR,
-                    minute=Config.SHUTDOWN_MINUTE,
-                    second=0,
-                    microsecond=0,
-                )
-                minutes_until = int((shutdown_next - now).total_seconds() // 60)
+                shutdown_date = now.date()
+                shutdown_next = tz.localize(datetime.combine(
+                    shutdown_date,
+                    datetime.min.time().replace(
+                        hour=Config.SHUTDOWN_HOUR, minute=Config.SHUTDOWN_MINUTE,
+                    ),
+                ))
+                if shutdown_next <= now:
+                    shutdown_next = tz.localize(datetime.combine(
+                        shutdown_date + timedelta(days=1), shutdown_next.time(),
+                    ))
+                # Round up so the report cannot start before the ten-minute window.
+                minutes_until = int(-(-(shutdown_next - now).total_seconds() // 60))
 
                 channel = self.get_channel(Config.TWITCH_CHANNEL)
 
-                # Send the day's unique planet records 30 minutes before shutdown.
+                # Use exactly the same standalone command as manual uploads.
                 if (
                     0 < minutes_until <= Config.PLANET_REPORT_MINUTES_BEFORE_SHUTDOWN
                     and last_planet_report_date != now.date()
                 ):
-                    endpoint = Config.get_planet_report_endpoint()
-                    bearer_token = Config.get_planet_report_bearer_token()
-                    if not endpoint or not bearer_token:
+                    if await self._post_planet_report():
                         last_planet_report_date = now.date()
-                        log("Nightly planet report: endpoint or bearer token is not configured; skipping.")
-                    else:
-                        try:
-                            payload = await asyncio.to_thread(
-                                post_daily_planets,
-                                endpoint,
-                                bearer_token,
-                            )
-                            last_planet_report_date = now.date()
-                            log(
-                                "Nightly planet report: posted "
-                                f"{len(payload['planets'])} planet(s)."
-                            )
-                        except Exception as e:
-                            log(f"Nightly planet report failed; will retry: {e}")
 
                 # ── 10-minute warning ──────────────────────────────────────
                 if 0 < minutes_until <= 10 and last_warning_date != now.date():
@@ -1130,6 +1119,27 @@ class NMSBot(commands.Bot):
                 log(f"Nightly shutdown loop error: {e}")
 
             await asyncio.sleep(60)
+
+    async def _post_planet_report(self):
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, os.path.join(os.path.dirname(__file__), "post_planets.py")],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            for output in (result.stdout, result.stderr):
+                if output.strip():
+                    log(f"Nightly planet report: {output.strip()}")
+            if result.returncode:
+                log("Nightly planet report failed; will retry in 60 seconds.")
+            return result.returncode == 0
+        except Exception as error:
+            log(f"Nightly planet report failed; will retry: {error}")
+            return False
 
     def _next_bluesky_post_time(self):
         """Return the next configured Bluesky post time."""

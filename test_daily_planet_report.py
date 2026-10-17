@@ -1,7 +1,10 @@
 import unittest
 from unittest import mock
+import tempfile
+from pathlib import Path
 
 import nms_bot
+import planet_reports
 
 
 SAMPLE_STATE = {
@@ -30,6 +33,11 @@ SAMPLE_STATE = {
 
 class DailyPlanetReportTests(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = mock.patch.object(planet_reports, "OUTBOX_FILE", Path(directory.name) / "outbox.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.original_stats = nms_bot._daily_stats
         self.original_position = nms_bot._daily_last_position
         self.original_planet = nms_bot._daily_last_planet
@@ -47,6 +55,11 @@ class DailyPlanetReportTests(unittest.TestCase):
 
     def test_builds_expected_portal_hex(self):
         self.assertEqual(nms_bot._planet_hex(SAMPLE_STATE), "216FA779F43A")
+
+    def test_unknown_rings_are_omitted(self):
+        data = dict(SAMPLE_STATE, planet=dict(SAMPLE_STATE["planet"]))
+        del data["planet"]["has_rings"]
+        self.assertNotIn("has_rings", nms_bot._planet_report_item(data))
 
     @mock.patch.object(nms_bot, "_save_daily_stats")
     def test_tracks_each_planet_once_with_flat_report_shape(self, _save):
@@ -75,11 +88,13 @@ class DailyPlanetReportTests(unittest.TestCase):
         )
 
     def test_post_uses_bearer_authorization_and_json_body(self):
-        report = {"planets": []}
+        report = {"planets": [nms_bot._planet_report_item(SAMPLE_STATE)]}
         with (
             mock.patch.object(nms_bot, "get_daily_planets_payload", return_value=report),
-            mock.patch.object(nms_bot.requests, "post") as post,
+            mock.patch.object(planet_reports.requests, "post") as post,
         ):
+            post.return_value.status_code = 200
+            post.return_value.text = '{"planets_created":1,"planets_updated":0,"visits_created":1}'
             payload = nms_bot.post_daily_planets("https://example.test/planets", "secret")
 
         self.assertEqual(payload, report)
@@ -88,8 +103,25 @@ class DailyPlanetReportTests(unittest.TestCase):
             json=report,
             headers={"Authorization": "Bearer secret"},
             timeout=15,
+            allow_redirects=False,
         )
-        post.return_value.raise_for_status.assert_called_once_with()
+
+    @mock.patch.object(nms_bot, "_save_daily_stats")
+    def test_retry_after_rollover_and_reload_preserves_first_visit(self, _save):
+        nms_bot.update_daily_movement("ON_FOOT", SAMPLE_STATE)
+        original = nms_bot.get_daily_planets_payload()
+        with mock.patch.object(planet_reports.requests, "post", side_effect=TimeoutError("offline")):
+            with self.assertRaises(TimeoutError):
+                nms_bot.post_daily_planets("https://example.test", "secret")
+        with mock.patch.object(nms_bot, "_today", return_value="2099-01-01"):
+            nms_bot._ensure_daily_stats()
+            with mock.patch.object(nms_bot, "_read_runtime_state", return_value={"daily": nms_bot._daily_stats}):
+                nms_bot._load_daily_stats()
+            with mock.patch.object(planet_reports.requests, "post") as post:
+                post.return_value.status_code = 200
+                post.return_value.text = '{}'
+                nms_bot.post_daily_planets("https://example.test", "secret")
+        self.assertEqual(post.call_args.kwargs["json"], original)
 
 
 if __name__ == "__main__":
