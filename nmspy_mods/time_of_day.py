@@ -12,12 +12,14 @@
 # window_name_override = "Time Of Day"
 # ///
 
+import ctypes
 import logging
 import math
 import traceback
 
 from pymhf import Mod
 from pymhf.core.hooking import on_key_pressed
+from pymhf.core import _internal
 from nmspy.globals import globals
 
 import nmspy.data.types as nms
@@ -36,6 +38,19 @@ NIGHT_TIME = 0.0
 # -1.0 releases the debug override and resumes the game's actual planet time.
 NORMAL_TIME = -1.0
 
+# This executable's reflection metadata and serializer both put ForceTimeOfDay
+# at 0x780. NMSpy 181442.1 declares 0x784 (ForceWaterColourIndex in this build),
+# whose default integer -1 reads as NaN. Limit the workaround to this exact EXE.
+_TIME_OFFSETS = {"d7e4c0b20e2fa555af2b7e1b358e05cebf8fabc8": 0x780}
+
+
+def _time_field():
+    debug = globals.GcDebugOptions
+    offset = _TIME_OFFSETS.get(_internal.BINARY_HASH)
+    if offset is None:
+        offset = type(debug).ForceTimeOfDay.offset
+    return ctypes.c_float.from_address(ctypes.addressof(debug) + offset)
+
 _flog = _make_logger("TimeOfDay.file", "time_of_day.log")
 logger = logging.getLogger("TimeOfDay")
 
@@ -45,14 +60,16 @@ _flog.info("=== time_of_day.py loaded ===")
 class TimeOfDay(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Set or release No Man's Sky time-of-day debug override with F6/F7/F8."
-    __version__ = "1.2"
+    __version__ = "1.3"
 
     def __init__(self):
         super().__init__()
         self._last_status = None
 
     def _sync_status(self) -> None:
-        value = float(globals.GcDebugOptions.ForceTimeOfDay)
+        value = float(_time_field().value)
+        if not math.isfinite(value) or not -1.01 <= value <= 1.01:
+            return
         if abs(value - DAY_TIME) < 0.001:
             status = "day"
         elif abs(value - NIGHT_TIME) < 0.001:
@@ -70,7 +87,8 @@ class TimeOfDay(Mod):
 
     def _set_time(self, value: float, source: str) -> None:
         try:
-            before = float(globals.GcDebugOptions.ForceTimeOfDay)
+            time_field = _time_field()
+            before = float(time_field.value)
             if not math.isfinite(before) or not -1.01 <= before <= 1.01:
                 _flog.error(
                     "[%s] refusing ForceTimeOfDay write: current value %r is not plausible",
@@ -78,8 +96,8 @@ class TimeOfDay(Mod):
                     before,
                 )
                 return
-            globals.GcDebugOptions.ForceTimeOfDay = float(value)
-            after = globals.GcDebugOptions.ForceTimeOfDay
+            time_field.value = float(value)
+            after = time_field.value
 
             self._sync_status()
 
