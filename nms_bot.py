@@ -239,7 +239,11 @@ def update_daily_movement(state, data):
         planet_key = _planet_key(data)
         env = data.get("environment") or {}
 
-        if planet_key and (state == "ON_FOOT" or env.get("inside_atmosphere") is True):
+        if (
+            planet_key
+            and not is_planet_loading()
+            and (state == "ON_FOOT" or env.get("inside_atmosphere") is True)
+        ):
             changed = False
             if planet_key not in _daily_stats["planets"]:
                 _daily_stats["planets"].append(planet_key)
