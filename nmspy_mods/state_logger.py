@@ -22,6 +22,7 @@ import time
 import traceback
 
 from pymhf import Mod
+from pymhf.core import _internal
 from pymhf.gui import FLOAT
 from pymhf.gui.decorators import STRING
 
@@ -52,14 +53,22 @@ DEFAULT_POLL_INTERVAL = 5.0
 _COSMOS_PLANET_DATA_OFFSET = 0x140
 _COSMOS_PLANET_GENERATION_INPUT_OFFSET = 0x3B40
 _COSMOS_PLANET_NAME_OFFSET = 0x3AAE
-# Verified from the Cosmos NMS.exe cGcPlayerEnvironment::IsOnPlanet machine
-# code.  The pre-Cosmos nmspy layout is now shifted by 0x1C, not 0x20.
-_COSMOS_ENV_LOCATION_OFFSET = 0x474
-_COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x480
-# These cave values were used by the previously working Cosmos build.
+# IsOnPlanet reads the stable location at +0x474, not the current location.
+# NMSpy 181442.1 agrees: meLocation is +0x468, meLocationStable is +0x474.
+# Reading +0x480 as stable left space/interior transitions stuck at UNKNOWN.
+_COSMOS_ENV_LOCATION_OFFSET = 0x468
+_COSMOS_ENV_LOCATION_STABLE_OFFSET = 0x474
+# Cave detection uses these same current/stable environment fields.
 _COSMOS_ENV_CAVE_LOCATION_OFFSET = 0x468
 _COSMOS_ENV_CAVE_LOCATION_STABLE_OFFSET = 0x474
 CAVE_CONFIRM_SECONDS = 3.0
+
+# Verified in this EXE's cGcPlayerState::SaveToData: count at +0x1AB14,
+# data pointer at +0x1AB18, and endpoint stride 0x90. NMSpy currently
+# describes this container as std::vector, which has a different layout.
+_STATION_ENDPOINT_LAYOUTS = {
+    "d7e4c0b20e2fa555af2b7e1b358e05cebf8fabc8": (0x1AB14, 0x1AB18),
+}
 
 # Cosmos inserted 0x400 bytes at the front of cGcPlayerState.  AwardUnits in
 # the current executable accesses Units/Nanites at +0x89C/+0x8A0, confirming
@@ -945,24 +954,61 @@ def _gather_planet_data(planet_ptr):
         return {}
 
 
-def _gather_solar_system_data(planet_ptr):
+def _gather_space_station_name(universe_address):
+    """Read the current system's saved station destination, never another system's."""
+    layout = _STATION_ENDPOINT_LAYOUTS.get(_internal.BINARY_HASH)
+    if layout is None:
+        return None
+
     try:
-        if not planet_ptr:
-            return {}
+        player_state = _get_player_state()
+        if player_state is None:
+            return None
+        address = ctypes.addressof(player_state)
+        count = ctypes.c_int32.from_address(address + layout[0]).value
+        data = ctypes.c_void_p.from_address(address + layout[1]).value
+        if not 0 < count <= 4096 or not data or data < 0x10000 or data % 8:
+            return None
 
-        pgid = _planet_struct_at(
-            planet_ptr,
-            _COSMOS_PLANET_GENERATION_INPUT_OFFSET,
-            nmse.cGcPlanetGenerationInputData,
-        )
+        keys = ("voxel_x", "voxel_y", "voxel_z", "solar_system_index", "reality_index")
+        current = tuple(universe_address[key] for key in keys)
+        endpoints = (nmse.cGcTeleportEndpoint * count).from_address(data)
+        for endpoint in endpoints:
+            if _read_enum32(endpoint.TeleporterType) not in (1, 7):
+                continue
+            ua = endpoint.UniverseAddress
+            ga = ua.GalacticAddress
+            system = (int(ga.VoxelX), int(ga.VoxelY), int(ga.VoxelZ),
+                      int(ga.SolarSystemIndex), int(ua.RealityIndex))
+            if system != current:
+                continue
+            name = _str(endpoint.Name).strip()
+            if _valid_player_name(name):
+                return name
+    except Exception:
+        _slog.warning("_gather_space_station_name failed: %s", traceback.format_exc())
+    return None
 
-        return {
-            "star_type": _enum_name(pgid.Star.__class__, _read_enum32(pgid.Star)),
-        }
+
+def _gather_solar_system_data(planet_ptr, universe_address=None, current_state=None):
+    result = {}
+    try:
+        if planet_ptr:
+            pgid = _planet_struct_at(
+                planet_ptr,
+                _COSMOS_PLANET_GENERATION_INPUT_OFFSET,
+                nmse.cGcPlanetGenerationInputData,
+            )
+            result["star_type"] = _enum_name(pgid.Star.__class__, _read_enum32(pgid.Star))
 
     except Exception:
         _slog.warning("_gather_solar_system_data failed: %s", traceback.format_exc())
-        return {}
+
+    if current_state == "SPACE_STATION" and universe_address:
+        name = _gather_space_station_name(universe_address)
+        if name:
+            result["space_station_name"] = name
+    return result
 
 
 def _find_standing_planet(planet_ptrs: dict) -> int:
@@ -1035,7 +1081,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
         "universe_address": ua,
         "environment": env_copy,
         "planet": _gather_planet_data(planet_ptr) if planet_ptr else {},
-        "solar_system": _gather_solar_system_data(planet_ptr) if planet_ptr else {},
+        "solar_system": _gather_solar_system_data(planet_ptr, ua, current_state),
         "mods": get_mod_status(),
     }
 
@@ -1043,7 +1089,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.15-localized-planet-info"
+    __version__ = "1.16-station-name"
 
     state = NMSModState()
 

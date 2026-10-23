@@ -195,7 +195,8 @@ def get_info_text(
         elif location == "FREIGHTER":
             activity = "Aboard a ship"
         elif location == "SPACE_STATION":
-            activity = "At a space station"
+            station_name = (state.get("solar_system") or {}).get("space_station_name")
+            activity = f"At a space station ({station_name})" if station_name else "At a space station"
         elif location == "IN_COCKPIT":
             activity = "In space"
         else:
