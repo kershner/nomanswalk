@@ -90,7 +90,7 @@ LOCATION_INDEPENDENT_COMMANDS = {
 }
 
 # Restrictions shared by stations, space, freighters, and other non-planets.
-OFF_PLANET_BLOCKED_COMMANDS = []
+OFF_PLANET_BLOCKED_COMMANDS = ["nuke"]
 
 # Unknown includes the conservative cockpit baseline plus off-planet rules.
 UNKNOWN_BLOCKED_COMMANDS = [

@@ -28,6 +28,7 @@ import requests
 import asyncio
 import json
 import time
+import math
 import pytz
 import os
 import sys
@@ -43,6 +44,7 @@ class Config:
     TWITCH_CHANNEL = "nomanswalk"
 
     CHAT_DELAY = 1.5
+    NUKE_COOLDOWN_SECONDS = 15
     VOTING_DURATION = 20
     TELEPORT_VOTING_DURATION = 60
 
@@ -109,6 +111,7 @@ class Config:
         "resume_time": "Normal planet time resumed.",
         "storm": "Storm toggled. Weather should shift shortly.",
         "gravity": "Low gravity toggled.",
+        "nuke": "Nuke requested! (15 second cooldown)",
         "ship": "Ship placement selected.",
         "anomaly": "Anomaly placement selected.",
         "pet": "Pet placement selected.",
@@ -331,6 +334,7 @@ class NMSBot(commands.Bot):
         self._active_command_tasks: set[asyncio.Task] = set()
         self._lockout_command: Optional[str] = None
         self._selfie_session: Optional[SelfieSession] = None
+        self._nuke_next_allowed = 0.0
         # Temporarily disable selfie upload limits.
         # self._selfie_limits_enabled = bool(
         #     get_runtime_game_state().get("selfie_limits_enabled", True)
@@ -1617,6 +1621,20 @@ class NMSBot(commands.Bot):
         if name == "selfie":
             await self._start_selfie(ctx, args, requested_by=ctx.author.name)
             return
+
+        if name == "nuke":
+            if args:
+                await self._say(ctx, "Use !nuke without options.")
+                return
+            now = time.monotonic()
+            remaining = math.ceil(self._nuke_next_allowed - now)
+            if remaining > 0:
+                unit = "second" if remaining == 1 else "seconds"
+                await self._say(ctx, f"Nuke is on cooldown ({remaining} {unit} left)")
+                return
+            # Reserve before yielding so simultaneous viewers cannot submit
+            # multiple bursts. Rejected requests never extend the cooldown.
+            self._nuke_next_allowed = now + Config.NUKE_COOLDOWN_SECONDS
 
         await self._submit_command(name, args)
 

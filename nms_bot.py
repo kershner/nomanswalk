@@ -1171,6 +1171,16 @@ def gravity(args=None):
     send_key("f10", 0.1)
 
 
+def nuke(args=None):
+    """Request a planetary Atlas explosion from the nuke_effect mod."""
+    if args:
+        raise ValueError("Use !nuke without options.")
+    if not is_command_allowed("nuke") or is_planet_loading():
+        log("Nuke ignored: the command is currently unavailable.")
+        return
+    send_key("f3", 0.1)
+
+
 def _do_teleport(key, label):
     """Shared logic for any teleport-style action — send a key, wait for planet load, reset state."""
     set_planet_loading(True)
@@ -1319,6 +1329,7 @@ COMMANDS: dict[str, Command] = {
     "resume_time": Command(resume_time, "Return to the planet's normal day/night cycle."),
     "storm": Command(storm, "Toggle a forced storm on/off."),
     "gravity": Command(gravity, "Toggle low gravity on/off."),
+    "nuke": Command(nuke, "Trigger three rapid Atlas space explosions ahead of the Walker on a planet (visual effects; 15-second cooldown)."),
 }
 
 # Expand aliases into COMMANDS so lookups work transparently.
