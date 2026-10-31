@@ -29,14 +29,15 @@ from nmspy.common import gameData
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_toggle.log")
 
-_STRUCT_SIZE = 0x6D80
-# Cosmos cGcApplication::Data size.
-_APP_DATA_SIZE = 0x94E850
-# Cosmos game code passes this embedded object to the user-settings save/apply
+_STRUCT_SIZE = 0x6D90
+# Current cGcApplication::Data size.
+_APP_DATA_SIZE = 0x986710
+# Current game code passes this embedded object to the user-settings save/apply
 # routines. It does not depend on the contents of the user's settings file.
-_USER_SETTINGS_OFFSET = 0x307B50
-# Cosmos reflection metadata registers cGcUserSettingsData::HUDHidden here.
-_HUD_HIDDEN_OFFSET = 0x6D60
+_USER_SETTINGS_OFFSET = 0x307C08
+# cGcUserSettingsData fields, matching NMSpy 184069.0.
+_HUD_HIDDEN_OFFSET = 0x6D68
+_HUD_MINIMAL_OFFSET = 0x6D69
 
 
 def _build_file_logger() -> logging.Logger:
@@ -159,7 +160,7 @@ def _find_settings(mpdata_addr: int) -> list[int]:
 class HUDToggle(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Toggle HUDHidden with F5."
-    __version__ = "2.5"
+    __version__ = "2.6"
 
     def __init__(self):
         super().__init__()
@@ -188,11 +189,13 @@ class HUDToggle(Mod):
             )
 
             hud_value = _u8(settings_addr + _HUD_HIDDEN_OFFSET)
-            if hud_value not in (0, 1):
+            minimal_value = _u8(settings_addr + _HUD_MINIMAL_OFFSET)
+            if hud_value not in (0, 1) or minimal_value not in (0, 1):
                 _flog.error(
-                    "HUDHidden sanity check failed at 0x%X: %s",
-                    settings_addr + _HUD_HIDDEN_OFFSET,
+                    "HUD sanity check failed at 0x%X: hidden=%s, minimal=%s",
+                    settings_addr,
                     hud_value,
+                    minimal_value,
                 )
                 return False
 
@@ -215,6 +218,9 @@ class HUDToggle(Mod):
         try:
             for addr in self._settings_addrs:
                 before = _u8(addr + _HUD_HIDDEN_OFFSET)
+                # Match the game's full-HUD mode, regardless of minimal mode.
+                if not hidden:
+                    ctypes.c_uint8.from_address(addr + _HUD_MINIMAL_OFFSET).value = 0
                 ctypes.c_uint8.from_address(addr + _HUD_HIDDEN_OFFSET).value = int(hidden)
                 after = _u8(addr + _HUD_HIDDEN_OFFSET)
 
@@ -232,6 +238,9 @@ class HUDToggle(Mod):
 
     @on_key_pressed("f5")
     def toggle_hud(self) -> None:
+        if not self._init_settings():
+            _flog.error("[F5] settings unavailable; cannot toggle")
+            return
         _flog.info("[F5] key hook fired; current hidden=%s", self._hud_hidden)
         self._apply(not self._hud_hidden, "F5")
 
