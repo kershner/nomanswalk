@@ -943,7 +943,7 @@ def get_cinematic_status():
 
 
 def cinematic(args=None):
-    """Use the mod's hotkeys only when its live state needs changing."""
+    """Request an explicit state without sending game-bound keyboard input."""
     if not args or len(args) != 1 or args[0].lower() not in {"on", "off"}:
         raise ValueError("Use !cinematic [on/off].")
     current = get_cinematic_status()
@@ -951,7 +951,11 @@ def cinematic(args=None):
         raise RuntimeError("Cinematic camera is unavailable; load the camera mod first.")
     enabled = args[0].lower() == "on"
     if current != enabled:
-        send_key("insert" if enabled else "end", 0.1)
+        request_file = os.path.join(BASE_DIR, "nmspy_mods", "cinematic_camera_request.json")
+        temporary = request_file + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as file:
+            json.dump({"id": uuid.uuid4().hex, "timestamp": time.time(), "action": "on" if enabled else "off"}, file)
+        os.replace(temporary, request_file)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             if get_cinematic_status() == enabled:

@@ -8,7 +8,7 @@
 # mod_dir = ""
 # [tool.pymhf.logging]
 # log_dir = "."
-# log_level = "info"
+# log_level = "warning"
 # window_name_override = "Cinematic Camera"
 # [tool.pymhf.gui]
 # shown = false
@@ -25,13 +25,14 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import queue
 import struct
+import threading
 import time
 
 from pymhf import FUNCDEF, Mod
 from pymhf.core import _internal
 from pymhf.core.hooking import manual_hook, on_key_pressed
 from pymhf.gui.decorators import FLOAT, BOOLEAN, STRING, gui_button, gui_group
-from nmspy.data.basic_types import cTkPhysRelMat34
+from nmspy.data.basic_types import cTkPhysRelMat34, cTkPhysRelVec3
 
 # Verified against this executable. Refuse another build before installing hooks.
 SHA256 = "a77fc29877789c3da9181afeb5941b9b85a27d3df24919a24403cf8e194c6109"
@@ -46,8 +47,8 @@ if hashlib.sha256(Path(_internal.BINARY_PATH).read_bytes()).hexdigest() != SHA25
 
 DEFAULT_SETTINGS = {
     "maximum_shot_seconds": 39.61000061035156,
-    "distance_max": 120,
-    "height_max": 80,
+    "distance_max": 60.32,
+    "height_max": 40.41,
     "speed_max": 3.0,
     "zoom_max": 4,
     "smooth_transitions": False,
@@ -56,13 +57,12 @@ DEFAULT_SETTINGS = {
     "vertical_response": 2.0
 }
 SETTING_BOUNDS = {
-    "maximum_shot_seconds": (10, 120), "distance_max": (28, 120),
-    "height_max": (14, 80), "speed_max": (math.degrees(0.04), 20),
+    "maximum_shot_seconds": (10, 120), "distance_max": (3, 120),
+    "height_max": (1.5, 80), "speed_max": (math.degrees(0.04), 20),
     "zoom_max": (1, 4), "transition_seconds": (0, 15), "vertical_response": (0.1, 20),
 }
 
-# The original wide shots provide fixed lower bounds. Four shared caps control
-# their variation; aim, offsets and stabilization are not randomized.
+# Placement is sampled separately from angle, so every angle can be a close shot.
 BASE_FRAMING = {
     "distance_scale": 1.0, "height_scale": 1.0, "target_height": 1.4,
     "rear_distance": 20.0, "rear_height": 7.0,
@@ -267,13 +267,17 @@ class Director:
             self.elapsed = 0.0
             self.side = self.rng.choice((-1, 1))
             self.shot_values = dict(BASE_FRAMING)
-            for key, baseline in BASE_FRAMING.items():
-                if key.endswith("_distance"):
-                    self.shot_values[key] = self.rng.uniform(baseline, settings["distance_max"])
-                elif key.endswith("_height") and key != "target_height":
-                    self.shot_values[key] = self.rng.uniform(baseline, settings["height_max"])
-            self.shot_values["orbit_speed_degrees"] = self.rng.uniform(BASE_FRAMING["orbit_speed_degrees"], settings["speed_max"])
+            distance = self.rng.uniform(3.0, settings["distance_max"])
+            height = self.rng.uniform(1.5, settings["height_max"])
             self.shot_values["distance_scale"] = self.rng.uniform(1.0, settings["zoom_max"])
+            for prefix in ("rear", "front", "side", "orbit"):
+                self.shot_values[prefix + "_distance"] = distance
+                self.shot_values[prefix + "_height"] = height
+            self.shot_values["side_behind"] = min(4.0, distance * 0.2)
+            # A fixed angular speed at 480m sweeps terrain at ~25m/s. Limit
+            # sideways travel to 6m/s while retaining the full distance range.
+            speed_cap = min(settings["speed_max"], math.degrees(6.0 / (distance * self.shot_values["distance_scale"])))
+            self.shot_values["orbit_speed_degrees"] = self.rng.uniform(min(BASE_FRAMING["orbit_speed_degrees"], speed_cap), speed_cap)
         self.remaining -= dt
         self.elapsed += dt
         self.transition_elapsed += dt
@@ -315,6 +319,7 @@ BASE = _internal.BASE_ADDRESS
 ROOT = Path(__file__).resolve().parent
 SETTINGS_FILE = ROOT / "cinematic_camera_settings.json"
 STATUS_FILE = ROOT / "cinematic_camera_status.json"
+REQUEST_FILE = ROOT / "cinematic_camera_request.json"
 # Verified in the same SHA256-locked executable as build_py. The manager
 # runs every active behaviour before returning; a behaviour-level hook is too early.
 CAMERA_MANAGER_UPDATE = 0x69E0F0
@@ -323,9 +328,9 @@ CAMERA_MANAGER_VTABLE = 0x4B18400
 # xmm1 at RVA 0x13E3E5B. Verified against the locked executable above.
 PLAYER_UPDATE = 0x1476AD0
 LOG = logging.getLogger("StandaloneCinematicCamera")
-LOG.setLevel(logging.INFO)
+LOG.setLevel(logging.WARNING)
 if not LOG.handlers:
-    handler = RotatingFileHandler(ROOT / "cinematic_camera.log", maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    handler = RotatingFileHandler(ROOT / "cinematic_camera.log", maxBytes=256_000, backupCount=1, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     LOG.addHandler(handler)
     LOG.propagate = False
@@ -392,9 +397,64 @@ class CameraTransforms(C.Structure):
     _fields_ = [("current", cTkPhysRelMat34), ("committed", cTkPhysRelMat34), ("previous", cTkPhysRelMat34)]
 
 
+def native(offset, result, *arguments):
+    return C.CFUNCTYPE(result, *arguments)(BASE + offset)
+
+
+def camera_clearance(desired, up, hit, previous, dt):
+    """Lift only out of terrain; ease downward after the ground drops away."""
+    if hit is not None and not all(math.isfinite(x) for x in hit):
+        raise ValueError("Invalid camera collision position")
+    lift = 0.0 if hit is None else max(0.0, dot(sub(hit, desired), up) + 0.25)
+    if previous is not None:
+        lift = max(lift, previous * math.exp(-2 * dt))
+    return add(desired, mul(up, lift)), lift
+
+
+class CameraCollision:
+    # cTkRaycastJob ABI verified in the SHA256-locked executable above.
+    # Use the terrain height-test group and synchronous runner, never job waits.
+    construct = native(0x2CE0EC0, C.c_void_p, C.c_void_p)
+    destroy = native(0x2CE1510, None, C.c_void_p)
+    initialise = native(0x2CF28C0, None, C.c_void_p, C.c_int, C.c_char_p, C.c_int, C.c_char_p, C.c_void_p)
+    set_ray = native(0x2CF7BF0, None, C.c_void_p, C.c_int, C.c_void_p, C.c_void_p)
+    run = native(0x2CF5B70, None, C.c_void_p)
+    get_point = native(0x2CEA9A0, C.c_void_p, C.c_void_p, C.c_void_p, C.c_int, C.c_int)
+    get_world = native(0x2D5C670, C.c_void_p, C.c_void_p)
+
+    def __init__(self):
+        self.job = C.create_string_buffer(0x80)
+        self.construct(self.job)
+        self.clearance = None
+
+    def close(self):
+        self.destroy(self.job)
+
+    def place(self, desired, up, origin, owner, dt, cut):
+        world = self.get_world(owner + 0x72D088)
+        if not world:
+            raise ValueError("Camera collision world unavailable")
+        self.initialise(self.job, 1, b"cinematic_camera.py", 0, b"CameraCollision.place", world)
+        a, b, hit = (cTkPhysRelVec3.from_buffer_copy(bytes(origin)) for _ in range(3))
+        # Check the ground at the camera, not visibility back to the player.
+        set_vector(a.local, sub(add(desired, mul(up, 256)), xyz(a.offset)))
+        set_vector(b.local, sub(sub(desired, mul(up, 0.25)), xyz(b.offset)))
+        self.set_ray(self.job, 0, C.byref(a), C.byref(b))
+        ray = C.c_void_p.from_buffer(self.job, 0x70).value
+        write(ray + 8, struct.pack("<I", 0x36))  # Raycast_PlanetHeightTest (excludes props/structures)
+        self.run(self.job)
+        blocked = struct.unpack("<H", read(ray + 0x70, 2))[0] != 0
+        if blocked:
+            self.get_point(self.job, C.byref(hit), 0, 0)
+        resolved, self.clearance = camera_clearance(desired, up,
+            add(xyz(hit.local), xyz(hit.offset)) if blocked else None,
+            None if cut else self.clearance, dt)
+        return resolved
+
+
 class CinematicCamera(Mod):
     __author__ = "Tyler Kershner"
-    __version__ = "0.2.0"
+    __version__ = "0.4.1"
     __description__ = "Standalone on-foot cinematic camera: Insert toggle, Home next shot, End stop."
 
     def __init__(self):
@@ -406,25 +466,48 @@ class CinematicCamera(Mod):
         self.actions = queue.SimpleQueue()
         self.overlay = Overlay()
         self._movement_camera = None
-        self.movement_updates = 0
         self.enabled = False
         self.last_status = 0.0
         self.last_camera = 0.0
         self.last_pose = None
+        self.collision = None
         # This verified engine build uses -Z for camera forward. Inferring it
         # from a look-at-player ray fails when first person sits at the head.
         self.forward_sign = -1
         self.reason = "Loaded; Insert toggles cinematic camera on/off"
         self.last_error = 0.0
-        self.settings_notice = "Each shot picks between its original baseline and these shared maximums. Save keeps your settings."
-        LOG.info("Loaded v%s for NMS SHA256 %s; final camera-manager update RVA %#x", self.__version__, SHA256, CAMERA_MANAGER_UPDATE)
+        self.last_status_error = 0.0
+        self.settings_notice = "Each shot randomly samples distance from 3m and height from 1.5m up to your maximums. Zoom multiplies distance."
+        self._last_request = None
+        self._io_stop = threading.Event()
+        previous_worker = getattr(_internal, "_cinematic_io_stop", None)
+        if previous_worker is not None:
+            previous_worker.set()
+        _internal._cinematic_io_stop = self._io_stop
+        self._io_thread = threading.Thread(target=self._service_files, name="cinematic-files", daemon=True)
+        self._io_thread.start()
+
+    def _service_files(self):
+        """Keep filesystem stalls out of all game-thread detours."""
+        while not self._io_stop.is_set():
+            try:
+                request = json.loads(REQUEST_FILE.read_text(encoding="utf-8"))
+                request_id = request["id"]
+                if request_id != self._last_request and 0 <= time.time() - float(request["timestamp"]) <= 10:
+                    self._last_request = request_id
+                    if request.get("action") in ("on", "off"):
+                        self.actions.put(request["action"])
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+            self._publish_status()
+            self._io_stop.wait(0.05)
 
     def _load_settings(self):
         try:
             if SETTINGS_FILE.exists():
                 return normalize_settings(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
-        except (OSError, ValueError, TypeError):
-            LOG.warning("Could not load camera settings; using factory defaults", exc_info=True)
+        except (OSError, ValueError, TypeError) as exc:
+            LOG.warning("Could not load camera settings; using factory defaults: %s", exc)
         return dict(DEFAULT_SETTINGS)
 
     def _apply_settings(self, settings):
@@ -513,14 +596,14 @@ class CinematicCamera(Mod):
 
 
     def _stop(self, reason):
-        changed = self.enabled or self.reason != reason
         self.enabled = False
         self.director.reset()
         self.last_pose = None
+        if self.collision is not None:
+            self.collision.close()
+            self.collision = None
         self.forward_sign = -1
         self.reason = reason
-        if changed:
-            LOG.info("Stopped: %s", reason)
 
     def _restore(self):
         if self.overlay.pending:
@@ -528,8 +611,8 @@ class CinematicCamera(Mod):
 
     def _report_error(self, error):
         # A missing player/camera during a load skips that frame, never the toggle.
-        if time.monotonic() - self.last_error > 5:
-            LOG.warning("Camera frame skipped; toggle remains %s: %s", self.enabled, error, exc_info=True)
+        if time.monotonic() - self.last_error > 30:
+            LOG.warning("Camera frame skipped; toggle remains %s: %s", self.enabled, error)
             self.last_error = time.monotonic()
         self.reason = f"Waiting for camera: {error}"
 
@@ -543,7 +626,6 @@ class CinematicCamera(Mod):
                 temporary.write_text(json.dumps(self.settings, indent=2) + "\n", encoding="utf-8")
                 temporary.replace(SETTINGS_FILE)
                 self.settings_notice = f"Saved to {SETTINGS_FILE.name}"
-                LOG.info("Saved camera settings: %s", json.dumps(self.settings, sort_keys=True))
             elif action[0] == "reload_settings":
                 self._apply_settings(self._load_settings())
                 self.settings_notice = "Loaded saved settings." if SETTINGS_FILE.exists() else "No saved settings; loaded factory settings."
@@ -564,10 +646,13 @@ class CinematicCamera(Mod):
             temporary.write_text(json.dumps({
                 "enabled": self.enabled,
                 "timestamp": time.time(),
+                "control_protocol": 1,
             }), encoding="utf-8")
             temporary.replace(STATUS_FILE)
-        except OSError:
-            LOG.warning("Could not publish cinematic camera status", exc_info=True)
+        except OSError as exc:
+            if now - self.last_status_error > 30:
+                LOG.warning("Could not publish cinematic camera status: %s", exc)
+                self.last_status_error = now
 
     @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
                  func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
@@ -602,9 +687,6 @@ class CinematicCamera(Mod):
             if (self.enabled and self.overlay.pending is None and data_address() == owner
                     and read(address, len(original)) == original):
                 self.overlay.apply(address, original, cinematic, owner, write)
-                self.movement_updates += 1
-                if self.movement_updates == 1:
-                    LOG.info("Movement uses native camera; cinematic view restored after player update")
         except Exception as exc:
             self._report_error(exc)
 
@@ -617,15 +699,14 @@ class CinematicCamera(Mod):
                 if isinstance(action, tuple):
                     self._settings_action(action)
                     continue
-                if action == "stop" or (action == "toggle" and self.enabled):
-                    self._stop("Stopped by hotkey")
+                if action in ("stop", "off") or (action == "toggle" and self.enabled):
+                    self._stop("Stopped by command or hotkey")
                 elif action == "next" and self.enabled:
                     self.director.next()
-                elif action == "toggle":
+                elif action == "toggle" or (action == "on" and not self.enabled):
                     self.enabled = True
+                    self.last_camera = 0.0
                     self.reason = "Cinematic camera enabled; waiting for player"
-                    LOG.info(self.reason)
-            self._publish_status()
             if not self.enabled:
                 self._restore()
         except Exception as exc:
@@ -683,6 +764,12 @@ class CinematicCamera(Mod):
             pose = self.director.update(dt, player_pos, xyz(player.up), xyz(player.at), self.forward_sign)
             if length(sub(pose.position, player_pos)) > 600:
                 raise ValueError("Cinematic camera exceeded its tracking radius")
+            if self.collision is None:
+                self.collision = CameraCollision()
+            up = self.director.stable_up
+            safe = self.collision.place(pose.position, up, player.pos, owner, dt, pose.cut)
+            target = add(self.director.anchor, mul(up, self.director.aim_height))
+            pose = Pose(safe, *look_at(safe, target, up, self.forward_sign), pose.cut, pose.shot)
             for name in ("current", "committed", "previous"):
                 matrix = getattr(transforms, name)
                 blending = self.settings["smooth_transitions"] and self.settings["transition_seconds"] > 0
@@ -695,12 +782,11 @@ class CinematicCamera(Mod):
             self.overlay.apply(camera, original, bytes(transforms), owner, write)
             self.last_pose = pose
             if pose.cut:
-                LOG.info("Shot %s for %.1f s", pose.shot, self.director.remaining)
                 self.reason = "Tracking player"
         except Exception as exc:
             # Memory is touched only by game-thread detours, never key/listener threads.
             try:
                 self._restore()
-            except Exception:
-                LOG.exception("Native camera restoration failed")
+            except Exception as restore_error:
+                self._report_error(f"Native camera restoration failed: {restore_error}")
             self._report_error(exc)
