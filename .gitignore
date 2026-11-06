@@ -1,4 +1,5 @@
 *.pyc
+*.json
 nms_state.json
 utilities/
 venv/

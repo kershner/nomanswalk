@@ -17,7 +17,7 @@ import nms_bot
 from nms_twitch_bot import Config, NMSBot, VoteState
 
 
-source = ast.parse((Path(__file__).parent / "nmspy_mods/cinematic_camera.py").read_text(encoding="utf-8"))
+source = ast.parse((Path(__file__).resolve().parents[1] / "nmspy_mods/cinematic_camera.py").read_text(encoding="utf-8"))
 names = {"DEFAULT_SETTINGS", "SETTING_BOUNDS", "BASE_FRAMING"}
 pure = [node for node in source.body if
         isinstance(node, ast.FunctionDef) or
