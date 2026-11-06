@@ -931,6 +931,35 @@ def right(args=None, movement_generation=None):
     _move_mouse_steps(MOUSE_STEP, 0, args, movement_generation)
 
 
+def get_cinematic_status():
+    try:
+        with open(os.path.join(BASE_DIR, "nmspy_mods", "cinematic_camera_status.json"), encoding="utf-8") as file:
+            status = json.load(file)
+        if 0 <= time.time() - float(status["timestamp"]) <= 10 and isinstance(status.get("enabled"), bool):
+            return status["enabled"]
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def cinematic(args=None):
+    """Use the mod's hotkeys only when its live state needs changing."""
+    if not args or len(args) != 1 or args[0].lower() not in {"on", "off"}:
+        raise ValueError("Use !cinematic [on/off].")
+    current = get_cinematic_status()
+    if current is None:
+        raise RuntimeError("Cinematic camera is unavailable; load the camera mod first.")
+    enabled = args[0].lower() == "on"
+    if current != enabled:
+        send_key("insert" if enabled else "end", 0.1)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if get_cinematic_status() == enabled:
+                return
+            time.sleep(0.1)
+        raise RuntimeError("Cinematic camera did not respond; try again.")
+
+
 def camera(args=None):
     send_key("0", 0.1)
 
@@ -1306,6 +1335,7 @@ COMMANDS: dict[str, Command] = {
     "left":    Command(left,    "Move the mouse left 1-100 steps. e.g. !left 5 turns left 5 steps.", aliases=("l",)),
     "right":   Command(right,   "Move the mouse right 1-100 steps. e.g. !right 5 turns right 5 steps.", aliases=("r",)),
     "camera":  Command(camera,  "Start a vote to switch between first-person and third-person camera views."),
+    "cinematic": Command(cinematic, "Use !cinematic on/off to start a vote to enable/disable automatic cinematic camera shots tracking the Walker on foot. Vote with !yes or !no. With no option, show usage and current On/Off status."),
     "spam_e":  Command(spam_e,  "Rapidly tap the interact key 15 times. Useful for QTEs.", hidden=True),
     "tap_e":   Command(tap_e,   "Tap the interact key once."),
     "hold_e":  Command(hold_e,  "Hold the interact key for 5 seconds."),

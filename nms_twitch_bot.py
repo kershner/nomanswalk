@@ -1,5 +1,5 @@
 from nms_bot import (
-    COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig,
+    COMMANDS, MOVEMENT_COMMANDS, NMSState, SelfieConfig, get_cinematic_status,
     _normalize_teleport_destination, cancel_movement, capture_visible_game_frame,
     end_selfie_gesture,
     enter_photo_mode, exit_photo_mode, get_canonical_command_name,
@@ -89,6 +89,7 @@ class Config:
 
     VOTABLE_COMMANDS = {
         "camera",
+        "cinematic",
         "coords",
         "music",
         "selfie",
@@ -602,6 +603,10 @@ class NMSBot(commands.Bot):
                     await self._do_location(channel)
         except Exception as e:
             log(f"Command failed: !{name} {args} ({e})")
+            if name == "cinematic":
+                channel = getattr(self, "_chat_context", None) or self.get_channel(Config.TWITCH_CHANNEL)
+                if channel:
+                    await self._say(channel, str(e))
         finally:
             if lockout:
                 self._lockout_command = None
@@ -1212,7 +1217,9 @@ class NMSBot(commands.Bot):
                 log(f"Bluesky scheduler failed: {e}")
 
     @staticmethod
-    def _vote_help_text(name: str) -> str:
+    def _vote_help_text(name: str, args=None) -> str:
+        if name == "cinematic" and args:
+            return f"Turn cinematic mode {args[0].capitalize()}."
         if name == "selfie":
             return "Set up a selfie for the requesting viewer."
         cmd = COMMANDS.get(name)
@@ -1240,7 +1247,7 @@ class NMSBot(commands.Bot):
         if starter:
             vote.votes[starter] = "yes"
 
-        help_text = self._vote_help_text(name)
+        help_text = self._vote_help_text(name, args)
 
         if is_teleport:
             planet, galaxy = _normalize_teleport_destination(args)
@@ -1282,7 +1289,7 @@ class NMSBot(commands.Bot):
                 no = sum(1 for value in vote.votes.values() if value == "no")
                 passed = yes > no
 
-                help_text = self._vote_help_text(name)
+                help_text = self._vote_help_text(name, args)
 
                 if passed:
                     if is_teleport and not is_command_allowed(name):
@@ -1557,6 +1564,17 @@ class NMSBot(commands.Bot):
             )
 
     async def _dispatch_nms_command(self, ctx: commands.Context, name: str, args: list[str]):
+        if name == "cinematic":
+            if not args:
+                status = await asyncio.to_thread(get_cinematic_status)
+                current = "Unavailable" if status is None else ("On" if status else "Off")
+                await self._say(ctx, f"Toggle cinematic mode - !cinematic [on/off].  Currently: {current}")
+                return
+            if len(args) != 1 or args[0].lower() not in {"on", "off"}:
+                await self._say(ctx, "Use !cinematic [on/off].")
+                return
+            args = [args[0].lower()]
+
         if name == "selfie_debug":
             if self._is_admin(ctx.author.name):
                 await self._start_selfie(

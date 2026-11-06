@@ -1,0 +1,706 @@
+# /// script
+# dependencies = ["nmspy==184702.0", "pymhf[gui]==0.2.5"]
+# [tool.pymhf]
+# exe = "NMS.exe"
+# steam_gameid = 275850
+# start_paused = false
+# internal_mod_dir = ""
+# mod_dir = ""
+# [tool.pymhf.logging]
+# log_dir = "."
+# log_level = "info"
+# window_name_override = "Cinematic Camera"
+# [tool.pymhf.gui]
+# shown = false
+# ///
+"""Standalone, opt-in cinematic tracking for the verified desktop NMS build."""
+import ctypes as C
+import json
+import hashlib
+import math
+import random
+from dataclasses import dataclass
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import queue
+import struct
+import time
+
+from pymhf import FUNCDEF, Mod
+from pymhf.core import _internal
+from pymhf.core.hooking import manual_hook, on_key_pressed
+from pymhf.gui.decorators import FLOAT, BOOLEAN, STRING, gui_button, gui_group
+from nmspy.data.basic_types import cTkPhysRelMat34
+
+# Verified against this executable. Refuse another build before installing hooks.
+SHA256 = "a77fc29877789c3da9181afeb5941b9b85a27d3df24919a24403cf8e194c6109"
+APPLICATION_UPDATE = 0x2DD3E0
+APPLICATION_DATA_GLOBAL = 0x6F6B208
+PLAYER_OFFSET = 0x72CDE0
+PLAYER_GRAPHICS = 0x310
+PLAYER_SPAWNED = 0x3160
+PLAYER_MODE = 0x72B6CC
+if hashlib.sha256(Path(_internal.BINARY_PATH).read_bytes()).hexdigest() != SHA256:
+    raise RuntimeError("Unsupported NMS.exe; cinematic camera hooks need revalidation")
+
+DEFAULT_SETTINGS = {
+    "maximum_shot_seconds": 39.61000061035156,
+    "distance_max": 120,
+    "height_max": 80,
+    "speed_max": 3.0,
+    "zoom_max": 4,
+    "smooth_transitions": False,
+    "transition_seconds": 3.0,
+    "hold_shot": False,
+    "vertical_response": 2.0
+}
+SETTING_BOUNDS = {
+    "maximum_shot_seconds": (10, 120), "distance_max": (28, 120),
+    "height_max": (14, 80), "speed_max": (math.degrees(0.04), 20),
+    "zoom_max": (1, 4), "transition_seconds": (0, 15), "vertical_response": (0.1, 20),
+}
+
+# The original wide shots provide fixed lower bounds. Four shared caps control
+# their variation; aim, offsets and stabilization are not randomized.
+BASE_FRAMING = {
+    "distance_scale": 1.0, "height_scale": 1.0, "target_height": 1.4,
+    "rear_distance": 20.0, "rear_height": 7.0,
+    "front_distance": 20.0, "front_height": 6.0,
+    "side_distance": 20.0, "side_height": 6.0, "side_behind": 4.0,
+    "orbit_distance": 28.0, "orbit_height": 14.0,
+    "orbit_speed_degrees": math.degrees(0.04), "orbit_start_degrees": math.degrees(0.6),
+}
+
+
+def normalize_settings(source):
+    """Read only the exposed controls; ignore obsolete saved fields."""
+    if not isinstance(source, dict):
+        raise ValueError("Camera settings must be an object")
+    settings = dict(DEFAULT_SETTINGS)
+    for key, default in settings.items():
+        value = source.get(key, default)
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be true or false")
+        else:
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f"{key} must be finite")
+            low, high = SETTING_BOUNDS[key]
+            value = max(low, min(high, value))
+        settings[key] = value
+    return settings
+
+
+def add(a, b):
+    return tuple(x + y for x, y in zip(a, b))
+
+
+def sub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
+def mul(a, scale):
+    return tuple(x * scale for x in a)
+
+
+def dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def length(a):
+    return math.sqrt(dot(a, a))
+
+
+def unit(a):
+    size = length(a)
+    if not math.isfinite(size) or size < 1e-6:
+        raise ValueError("Degenerate camera axis")
+    return mul(a, 1 / size)
+
+
+def cross(a, b):
+    return (a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0])
+
+
+def validate_basis(right, up, at):
+    axes = (right, up, at)
+    if any(not all(math.isfinite(x) for x in a) or abs(length(a) - 1) > 0.08 for a in axes):
+        raise ValueError("Unexpected native transform axes")
+    if any(abs(dot(axes[i], axes[j])) > 0.08 for i, j in ((0, 1), (0, 2), (1, 2))):
+        raise ValueError("Native transform is not orthogonal")
+    if dot(cross(right, up), at) < 0.9:
+        raise ValueError("Unexpected transform handedness")
+
+
+def look_at(position, target, up, forward_sign):
+    at = mul(unit(sub(target, position)), forward_sign)
+    right = unit(cross(up, at))
+    return right, unit(cross(at, right)), at
+
+
+def blend_offset(start, end, up, amount):
+    """Travel around the subject instead of through them on opposite shots."""
+    start_height, end_height = dot(start, up), dot(end, up)
+    a = sub(start, mul(up, start_height))
+    b = sub(end, mul(up, end_height))
+    ar, br = length(a), length(b)
+    a, b = unit(a), unit(b)
+    angle = math.atan2(dot(up, cross(a, b)), max(-1, min(1, dot(a, b))))
+    direction = add(mul(a, math.cos(angle * amount)), mul(cross(up, a), math.sin(angle * amount)))
+    return add(mul(direction, ar + (br - ar) * amount),
+               mul(up, start_height + (end_height - start_height) * amount))
+
+
+@dataclass(frozen=True)
+class Pose:
+    position: tuple
+    right: tuple
+    up: tuple
+    at: tuple
+    cut: bool
+    shot: str
+
+
+class Overlay:
+    """Restore only bytes still owned by us, in the same live game session."""
+    def __init__(self):
+        self.pending = None
+
+    def apply(self, address, original, written, owner, write):
+        # Arm restoration before writing, so a partial failure remains recoverable.
+        self.pending = (address, original, written, owner)
+        write(address, written)
+
+    def restore(self, owner, read, write):
+        pending, self.pending = self.pending, None
+        if pending is None:
+            return
+        address, original, written, previous_owner = pending
+        if owner == previous_owner and read(address, len(written)) == written:
+            write(address, original)
+
+
+class Director:
+    SHOTS = ("rear", "side", "front", "high_orbit")
+
+    def __init__(self, settings=None, seed=None):
+        self.settings = normalize_settings(settings or DEFAULT_SETTINGS)
+        self.minimum, self.maximum = 10.0, self.settings["maximum_shot_seconds"]
+        self.rng = random.Random(seed)
+        self.reset()
+
+    def reset(self):
+        self.shot = None
+        self.remaining = 0.0
+        self.elapsed = 0.0
+        self.heading = None
+        self.position = None
+        self.last_player = None
+        self.bag = []
+        self.stable_up = None
+        self.anchor = None
+        self.offset = None
+        self.transition_from = None
+        self.transition_elapsed = 0.0
+        self._force_next = False
+        self.shot_values = {}
+        self.aim_height = None
+        self.transition_aim_from = None
+
+    def configure(self, settings):
+        previous = self.settings
+        self.settings = normalize_settings(settings)
+        self.maximum = self.settings["maximum_shot_seconds"]
+        self.remaining = min(self.remaining, self.maximum)
+        if self.offset is not None and previous["transition_seconds"] != self.settings["transition_seconds"]:
+            self.transition_from = self.offset
+            self.transition_elapsed = 0.0
+            self.transition_aim_from = self.aim_height
+
+    def next(self):
+        self.remaining = 0.0
+        self._force_next = True
+
+    def update(self, dt, player_position, player_up, player_forward, forward_sign):
+        if not math.isfinite(dt) or not 0 < dt <= 0.25:
+            raise ValueError("Paused or discontinuous camera timestep")
+        if any(not math.isfinite(x) for x in player_position):
+            raise ValueError("Invalid player position")
+        if self.last_player is not None and length(sub(player_position, self.last_player)) > 40:
+            raise ValueError("Player teleported; cinematic camera stopped")
+        self.last_player = player_position
+        settings = self.settings
+        measured_up = unit(player_up)
+        if self.stable_up is None:
+            self.stable_up = measured_up
+        else:
+            # Resist jetpack/body pitch and roll while adapting to planet curvature.
+            self.stable_up = unit(add(self.stable_up, mul(sub(measured_up, self.stable_up),
+                                                        1 - math.exp(-0.5 * dt))))
+        up = self.stable_up
+        if self.anchor is None:
+            self.anchor = player_position
+        else:
+            delta = sub(player_position, self.anchor)
+            vertical = mul(up, dot(delta, up))
+            horizontal = sub(delta, vertical)
+            # Both the camera and its aim point use this same stabilized anchor.
+            # Vertical bob is damped more heavily than travel across the ground.
+            self.anchor = add(self.anchor, add(mul(horizontal, 1 - math.exp(-4.0 * dt)),
+                                               mul(vertical, 1 - math.exp(-settings["vertical_response"] * dt))))
+        cut = self.shot is None or self._force_next or (self.remaining <= 0 and not settings["hold_shot"])
+        if cut:
+            self._force_next = False
+            self.transition_from = self.offset
+            self.transition_aim_from = self.aim_height
+            self.transition_elapsed = 0.0
+            if not self.bag:
+                self.bag = list(self.SHOTS)
+                self.rng.shuffle(self.bag)
+                if self.bag[-1] == self.shot:
+                    self.bag[0], self.bag[-1] = self.bag[-1], self.bag[0]
+            self.shot = self.bag.pop()
+            self.heading = unit(sub(player_forward, mul(up, dot(player_forward, up))))
+            self.remaining = self.rng.uniform(self.minimum, self.maximum)
+            self.elapsed = 0.0
+            self.side = self.rng.choice((-1, 1))
+            self.shot_values = dict(BASE_FRAMING)
+            for key, baseline in BASE_FRAMING.items():
+                if key.endswith("_distance"):
+                    self.shot_values[key] = self.rng.uniform(baseline, settings["distance_max"])
+                elif key.endswith("_height") and key != "target_height":
+                    self.shot_values[key] = self.rng.uniform(baseline, settings["height_max"])
+            self.shot_values["orbit_speed_degrees"] = self.rng.uniform(BASE_FRAMING["orbit_speed_degrees"], settings["speed_max"])
+            self.shot_values["distance_scale"] = self.rng.uniform(1.0, settings["zoom_max"])
+        self.remaining -= dt
+        self.elapsed += dt
+        self.transition_elapsed += dt
+        heading = unit(sub(self.heading, mul(up, dot(self.heading, up))))
+        right = unit(cross(up, heading))
+        framing = self.shot_values
+        if self.shot == "rear":
+            offset = add(mul(heading, -framing["rear_distance"] * framing["distance_scale"]),
+                         mul(up, framing["rear_height"] * framing["height_scale"]))
+        elif self.shot == "front":
+            offset = add(mul(heading, framing["front_distance"] * framing["distance_scale"]),
+                         mul(up, framing["front_height"] * framing["height_scale"]))
+        elif self.shot == "side":
+            offset = add(add(mul(right, self.side * framing["side_distance"] * framing["distance_scale"]),
+                             mul(heading, -framing["side_behind"] * framing["distance_scale"])),
+                         mul(up, framing["side_height"] * framing["height_scale"]))
+        else:
+            angle = self.side * math.radians(framing["orbit_start_degrees"] + self.elapsed * framing["orbit_speed_degrees"])
+            radius = framing["orbit_distance"] * framing["distance_scale"]
+            offset = add(add(mul(heading, -radius * math.cos(angle)), mul(right, radius * math.sin(angle))),
+                         mul(up, framing["orbit_height"] * framing["height_scale"]))
+        duration = settings["transition_seconds"] if settings["smooth_transitions"] else 0
+        eased = 1.0
+        if self.transition_from is not None and self.transition_elapsed < duration:
+            t = self.transition_elapsed / duration
+            eased = t*t*t * (10 - 15*t + 6*t*t)
+            offset = blend_offset(self.transition_from, offset, up, eased)
+        self.offset = offset
+        self.position = add(self.anchor, offset)
+        self.aim_height = framing["target_height"]
+        if self.transition_aim_from is not None:
+            self.aim_height = self.transition_aim_from + (self.aim_height - self.transition_aim_from) * eased
+        target = add(self.anchor, mul(up, self.aim_height))
+        axes = look_at(self.position, target, up, forward_sign)
+        return Pose(self.position, *axes, cut, self.shot)
+
+
+BASE = _internal.BASE_ADDRESS
+ROOT = Path(__file__).resolve().parent
+SETTINGS_FILE = ROOT / "cinematic_camera_settings.json"
+STATUS_FILE = ROOT / "cinematic_camera_status.json"
+# Verified in the same SHA256-locked executable as build_py. The manager
+# runs every active behaviour before returning; a behaviour-level hook is too early.
+CAMERA_MANAGER_UPDATE = 0x69E0F0
+CAMERA_MANAGER_VTABLE = 0x4B18400
+# cGcSimulation::Update calls this with its player (+0x25F860) and dt in
+# xmm1 at RVA 0x13E3E5B. Verified against the locked executable above.
+PLAYER_UPDATE = 0x1476AD0
+LOG = logging.getLogger("StandaloneCinematicCamera")
+LOG.setLevel(logging.INFO)
+if not LOG.handlers:
+    handler = RotatingFileHandler(ROOT / "cinematic_camera.log", maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOG.addHandler(handler)
+    LOG.propagate = False
+
+KERNEL = C.WinDLL("kernel32", use_last_error=True)
+KERNEL.GetCurrentProcess.restype = C.c_void_p
+PROCESS = KERNEL.GetCurrentProcess()
+for name in ("ReadProcessMemory", "WriteProcessMemory"):
+    func = getattr(KERNEL, name)
+    func.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.c_size_t, C.POINTER(C.c_size_t)]
+    func.restype = C.c_int
+
+
+def read(address, size):
+    buffer = C.create_string_buffer(size)
+    count = C.c_size_t()
+    if not address or not KERNEL.ReadProcessMemory(PROCESS, address, buffer, size, C.byref(count)) or count.value != size:
+        raise RuntimeError(f"Camera memory is unavailable at {address:#x}")
+    return buffer.raw
+
+
+def write(address, data):
+    count = C.c_size_t()
+    buffer = C.create_string_buffer(data)
+    if not KERNEL.WriteProcessMemory(PROCESS, address, buffer, len(data), C.byref(count)) or count.value != len(data):
+        raise RuntimeError("Could not apply camera transform")
+
+
+def data_address():
+    return struct.unpack("<Q", read(BASE + APPLICATION_DATA_GLOBAL, 8))[0]
+
+
+def xyz(vector):
+    return (float(vector.x), float(vector.y), float(vector.z))
+
+
+def position(matrix):
+    return add(xyz(matrix.pos.local), xyz(matrix.pos.offset))
+
+
+def set_vector(vector, values):
+    vector.x, vector.y, vector.z = values
+
+
+def setting_control(key, label):
+    """Bind pyMHF's standard widgets to settings queued for the game thread."""
+    def getter(self):
+        return self.settings[key]
+
+    def setter(self, value):
+        self.actions.put(("setting", key, value))
+
+    getter.__name__ = key
+    getter.__qualname__ = f"CinematicCamera.{key}"
+    if isinstance(DEFAULT_SETTINGS[key], bool):
+        getter = BOOLEAN(label)(getter)
+    else:
+        low, high = SETTING_BOUNDS[key]
+        getter = FLOAT(label, is_slider=True, min_value=low, max_value=high, format="%.2f")(getter)
+    return property(getter, setter)
+
+
+class CameraTransforms(C.Structure):
+    _fields_ = [("current", cTkPhysRelMat34), ("committed", cTkPhysRelMat34), ("previous", cTkPhysRelMat34)]
+
+
+class CinematicCamera(Mod):
+    __author__ = "Tyler Kershner"
+    __version__ = "0.2.0"
+    __description__ = "Standalone on-foot cinematic camera: Insert toggle, Home next shot, End stop."
+
+    def __init__(self):
+        super().__init__()
+        if C.sizeof(cTkPhysRelMat34) != 0x50 or C.sizeof(CameraTransforms) != 0xF0:
+            raise RuntimeError("Unsupported NMSpy camera structure layout")
+        self.settings = self._load_settings()
+        self.director = Director(settings=self.settings)
+        self.actions = queue.SimpleQueue()
+        self.overlay = Overlay()
+        self._movement_camera = None
+        self.movement_updates = 0
+        self.enabled = False
+        self.last_status = 0.0
+        self.last_camera = 0.0
+        self.last_pose = None
+        # This verified engine build uses -Z for camera forward. Inferring it
+        # from a look-at-player ray fails when first person sits at the head.
+        self.forward_sign = -1
+        self.reason = "Loaded; Insert toggles cinematic camera on/off"
+        self.last_error = 0.0
+        self.settings_notice = "Each shot picks between its original baseline and these shared maximums. Save keeps your settings."
+        LOG.info("Loaded v%s for NMS SHA256 %s; final camera-manager update RVA %#x", self.__version__, SHA256, CAMERA_MANAGER_UPDATE)
+
+    def _load_settings(self):
+        try:
+            if SETTINGS_FILE.exists():
+                return normalize_settings(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            LOG.warning("Could not load camera settings; using factory defaults", exc_info=True)
+        return dict(DEFAULT_SETTINGS)
+
+    def _apply_settings(self, settings):
+        settings = normalize_settings(settings)
+        self.director.configure(settings)
+        self.settings = dict(self.director.settings)
+        self.settings_notice = "Maximums apply on the next shot. Press Home to draw new values now."
+
+    with gui_group("Playback"):
+        @property
+        @STRING("Status")
+        def camera_status(self):
+            state = "ON" if self.enabled else "OFF"
+            timer = "held" if self.settings["hold_shot"] else f"{max(0, self.director.remaining):.1f}s"
+            return f"{state} | {self.director.shot or 'waiting for player'} | {timer}"
+
+        @gui_button("Toggle cinematic camera (Insert)")
+        def toggle_button(self):
+            self.actions.put("toggle")
+
+        @gui_button("Next shot (Home)")
+        def next_button(self):
+            self.actions.put("next")
+
+        hold_shot = setting_control("hold_shot", "Hold current shot (Home still advances)")
+
+    with gui_group("Camera"):
+        distance_max = setting_control("distance_max", "Distance max (m)")
+        height_max = setting_control("height_max", "Height max (m)")
+        speed_max = setting_control("speed_max", "Speed max (orbit degrees/second)")
+        zoom_max = setting_control("zoom_max", "Zoom max (distance multiplier)")
+
+        @property
+        @STRING("Current shot's sampled placement")
+        def current_placement(self):
+            values = self.director.shot_values
+            if not values:
+                return "No shot chosen yet."
+            prefix = "orbit" if self.director.shot == "high_orbit" else self.director.shot
+            distance = values[prefix + "_distance"] * values["distance_scale"]
+            height = values[prefix + "_height"] * values["height_scale"]
+            result = f"{self.director.shot}: distance {distance:.2f}m | height {height:.2f}m"
+            if prefix == "side":
+                result += f" | behind {values['side_behind'] * values['distance_scale']:.2f}m"
+            elif prefix == "orbit":
+                result += f" | speed {values['orbit_speed_degrees']:.2f} deg/s | start {values['orbit_start_degrees']:.1f} deg"
+            return result
+
+    with gui_group("Timing and transitions"):
+        maximum_shot_seconds = setting_control("maximum_shot_seconds", "Shot duration max (seconds; min 10)")
+        smooth_transitions = setting_control("smooth_transitions", "Smooth transitions (off = hard cuts)")
+        transition_seconds = setting_control("transition_seconds", "Transition time (seconds)")
+
+    with gui_group("Jetpack smoothing"):
+        vertical_response = setting_control("vertical_response", "Jetpack response (lower = smoother)")
+
+    with gui_group("Saved settings"):
+        @property
+        @STRING("Settings")
+        def settings_status(self):
+            return self.settings_notice
+
+        @gui_button("Save settings for next launch")
+        def save_settings(self):
+            self.actions.put(("save_settings",))
+
+        @gui_button("Reload saved settings")
+        def reload_settings(self):
+            self.actions.put(("reload_settings",))
+
+        @gui_button("Reset to factory settings")
+        def reset_settings(self):
+            self.actions.put(("factory_settings",))
+
+    @on_key_pressed("insert")
+    def toggle_key(self):
+        self.actions.put("toggle")
+
+    @on_key_pressed("home")
+    def next_key(self):
+        self.actions.put("next")
+
+    @on_key_pressed("end")
+    def stop_key(self):
+        self.actions.put("stop")
+
+
+    def _stop(self, reason):
+        changed = self.enabled or self.reason != reason
+        self.enabled = False
+        self.director.reset()
+        self.last_pose = None
+        self.forward_sign = -1
+        self.reason = reason
+        if changed:
+            LOG.info("Stopped: %s", reason)
+
+    def _restore(self):
+        if self.overlay.pending:
+            self.overlay.restore(data_address(), read, write)
+
+    def _report_error(self, error):
+        # A missing player/camera during a load skips that frame, never the toggle.
+        if time.monotonic() - self.last_error > 5:
+            LOG.warning("Camera frame skipped; toggle remains %s: %s", self.enabled, error, exc_info=True)
+            self.last_error = time.monotonic()
+        self.reason = f"Waiting for camera: {error}"
+
+    def _settings_action(self, action):
+        try:
+            if action[0] == "setting":
+                _, key, value = action
+                self._apply_settings(dict(self.settings, **{key: value}))
+            elif action[0] == "save_settings":
+                temporary = SETTINGS_FILE.with_suffix(".json.tmp")
+                temporary.write_text(json.dumps(self.settings, indent=2) + "\n", encoding="utf-8")
+                temporary.replace(SETTINGS_FILE)
+                self.settings_notice = f"Saved to {SETTINGS_FILE.name}"
+                LOG.info("Saved camera settings: %s", json.dumps(self.settings, sort_keys=True))
+            elif action[0] == "reload_settings":
+                self._apply_settings(self._load_settings())
+                self.settings_notice = "Loaded saved settings." if SETTINGS_FILE.exists() else "No saved settings; loaded factory settings."
+            elif action[0] == "factory_settings":
+                self._apply_settings(DEFAULT_SETTINGS)
+                self.settings_notice = "Factory settings restored. Saved settings unchanged until Save is pressed."
+        except (OSError, ValueError, TypeError) as exc:
+            self.settings_notice = f"Settings not applied: {exc}"
+            LOG.warning(self.settings_notice)
+
+    def _publish_status(self):
+        now = time.monotonic()
+        if now - self.last_status < 0.5:
+            return
+        self.last_status = now
+        try:
+            temporary = STATUS_FILE.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps({
+                "enabled": self.enabled,
+                "timestamp": time.time(),
+            }), encoding="utf-8")
+            temporary.replace(STATUS_FILE)
+        except OSError:
+            LOG.warning("Could not publish cinematic camera status", exc_info=True)
+
+    @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
+                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
+    def before_movement(self, this, timestep):
+        try:
+            pending = self.overlay.pending
+            if not self.enabled or pending is None or self._movement_camera is not None:
+                return
+            address, original, cinematic, owner = pending
+            if this != owner + PLAYER_OFFSET or data_address() != owner:
+                return
+            if read(address, len(cinematic)) != cinematic:
+                return
+            # The player calculates camera-relative movement here. Give it the
+            # native view, without touching player facing, input, or shot state.
+            self._movement_camera = pending
+            self.overlay.pending = None
+            write(address, original)
+        except Exception as exc:
+            self._report_error(exc)
+
+    @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
+                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="after")
+    def after_movement(self, this, timestep):
+        pending, self._movement_camera = self._movement_camera, None
+        if pending is None:
+            return
+        try:
+            address, original, cinematic, owner = pending
+            # Put the same cinematic pose back before rendering. If native code
+            # changed the camera during movement, let the final manager hook win.
+            if (self.enabled and self.overlay.pending is None and data_address() == owner
+                    and read(address, len(original)) == original):
+                self.overlay.apply(address, original, cinematic, owner, write)
+                self.movement_updates += 1
+                if self.movement_updates == 1:
+                    LOG.info("Movement uses native camera; cinematic view restored after player update")
+        except Exception as exc:
+            self._report_error(exc)
+
+    @manual_hook("Cinematic.ApplicationUpdate", offset=APPLICATION_UPDATE,
+                 func_def=FUNCDEF(None, [C.c_void_p]), detour_time="before")
+    def before_frame(self, this):
+        try:
+            while not self.actions.empty():
+                action = self.actions.get_nowait()
+                if isinstance(action, tuple):
+                    self._settings_action(action)
+                    continue
+                if action == "stop" or (action == "toggle" and self.enabled):
+                    self._stop("Stopped by hotkey")
+                elif action == "next" and self.enabled:
+                    self.director.next()
+                elif action == "toggle":
+                    self.enabled = True
+                    self.reason = "Cinematic camera enabled; waiting for player"
+                    LOG.info(self.reason)
+            self._publish_status()
+            if not self.enabled:
+                self._restore()
+        except Exception as exc:
+            self._report_error(exc)
+
+    @manual_hook("Cinematic.FinalCameraManagerUpdate", offset=CAMERA_MANAGER_UPDATE,
+                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
+    def before_camera(self, this, timestep):
+        try:
+            # Restore only at the start of the next camera-manager update. Restoring
+            # in Application.Update can erase our pose before the renderer uses it.
+            self._restore()
+        except Exception as exc:
+            self._report_error(exc)
+
+    @manual_hook("Cinematic.FinalCameraManagerUpdate", offset=CAMERA_MANAGER_UPDATE,
+                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="after")
+    def after_camera(self, this, timestep):
+        try:
+            if not self.enabled:
+                return
+            owner = data_address()
+            if not owner:
+                raise ValueError("No live game session")
+            vtable = struct.unpack("<Q", read(this, 8))[0]
+            mode = struct.unpack("<I", read(owner + PLAYER_MODE, 4))[0]
+            spawned = read(owner + PLAYER_OFFSET + PLAYER_SPAWNED, 1) == b"\x01"
+            # Same mode test as native third-person Update; 8 is excluded for v0.1.
+            if vtable != BASE + CAMERA_MANAGER_VTABLE or mode != 0 or not spawned:
+                return
+            # GetMatrix/GetCommittedMatrix select these same two camera objects
+            # using the manager's +0x330 alternate-camera flag.
+            alternate = read(this + 0x330, 1) != b"\x00"
+            camera = this + (0x230 if alternate else 0x130)
+            original = read(camera, C.sizeof(CameraTransforms))
+            transforms = CameraTransforms.from_buffer_copy(original)
+            player = cTkPhysRelMat34.from_buffer_copy(read(owner + PLAYER_OFFSET + PLAYER_GRAPHICS, 0x50))
+            validate_basis(*(xyz(getattr(player, name)) for name in ("right", "up", "at")))
+            validate_basis(*(xyz(getattr(transforms.committed, name)) for name in ("right", "up", "at")))
+            player_pos = position(player)
+            distance = length(sub(position(transforms.committed), player_pos))
+            if not 0 <= distance < 100:
+                raise ValueError(f"Native camera/player coordinate mismatch ({distance:.2f} m)")
+            now = time.monotonic()
+            elapsed = now - self.last_camera if self.last_camera else 1 / 60
+            # Snap framing after a teleport without changing the user's toggle.
+            if (self.director.last_player is not None and
+                    length(sub(player_pos, self.director.last_player)) > 40):
+                self.director.reset()
+                self.last_pose = None
+            self.last_camera = now
+            # Shot timing uses real elapsed time, including unfocused/paused updates.
+            dt = max(0.000001, min(elapsed, 0.25))
+            self.director.remaining -= max(0.0, elapsed - dt)
+            pose = self.director.update(dt, player_pos, xyz(player.up), xyz(player.at), self.forward_sign)
+            if length(sub(pose.position, player_pos)) > 600:
+                raise ValueError("Cinematic camera exceeded its tracking radius")
+            for name in ("current", "committed", "previous"):
+                matrix = getattr(transforms, name)
+                blending = self.settings["smooth_transitions"] and self.settings["transition_seconds"] > 0
+                use_previous = name == "previous" and self.last_pose and (not pose.cut or blending)
+                sample = self.last_pose if use_previous else pose
+                set_vector(matrix.right, sample.right)
+                set_vector(matrix.up, sample.up)
+                set_vector(matrix.at, sample.at)
+                set_vector(matrix.pos.local, sub(sample.position, xyz(matrix.pos.offset)))
+            self.overlay.apply(camera, original, bytes(transforms), owner, write)
+            self.last_pose = pose
+            if pose.cut:
+                LOG.info("Shot %s for %.1f s", pose.shot, self.director.remaining)
+                self.reason = "Tracking player"
+        except Exception as exc:
+            # Memory is touched only by game-thread detours, never key/listener threads.
+            try:
+                self._restore()
+            except Exception:
+                LOG.exception("Native camera restoration failed")
+            self._report_error(exc)
