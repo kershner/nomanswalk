@@ -46,18 +46,18 @@ if hashlib.sha256(Path(_internal.BINARY_PATH).read_bytes()).hexdigest() != SHA25
     raise RuntimeError("Unsupported NMS.exe; cinematic camera hooks need revalidation")
 
 DEFAULT_SETTINGS = {
-    "maximum_shot_seconds": 39.61000061035156,
-    "distance_max": 60.32,
-    "height_max": 40.41,
+    "maximum_shot_seconds": 40.0,
+    "distance_max": 20.0,
+    "height_max": 20.05,
     "speed_max": 3.0,
-    "zoom_max": 4,
+    "zoom_max": 1,
     "smooth_transitions": False,
     "transition_seconds": 3.0,
     "hold_shot": False,
     "vertical_response": 2.0
 }
 SETTING_BOUNDS = {
-    "maximum_shot_seconds": (10, 120), "distance_max": (3, 120),
+    "maximum_shot_seconds": (20, 120), "distance_max": (3, 120),
     "height_max": (1.5, 80), "speed_max": (math.degrees(0.04), 20),
     "zoom_max": (1, 4), "transition_seconds": (0, 15), "vertical_response": (0.1, 20),
 }
@@ -187,7 +187,7 @@ class Director:
 
     def __init__(self, settings=None, seed=None):
         self.settings = normalize_settings(settings or DEFAULT_SETTINGS)
-        self.minimum, self.maximum = 10.0, self.settings["maximum_shot_seconds"]
+        self.minimum, self.maximum = 20.0, self.settings["maximum_shot_seconds"]
         self.rng = random.Random(seed)
         self.reset()
 
@@ -557,7 +557,7 @@ class CinematicCamera(Mod):
             return result
 
     with gui_group("Timing and transitions"):
-        maximum_shot_seconds = setting_control("maximum_shot_seconds", "Shot duration max (seconds; min 10)")
+        maximum_shot_seconds = setting_control("maximum_shot_seconds", "Shot duration max (seconds; min 20)")
         smooth_transitions = setting_control("smooth_transitions", "Smooth transitions (off = hard cuts)")
         transition_seconds = setting_control("transition_seconds", "Transition time (seconds)")
 
