@@ -343,20 +343,50 @@ for name in ("ReadProcessMemory", "WriteProcessMemory"):
     func.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.c_size_t, C.POINTER(C.c_size_t)]
     func.restype = C.c_int
 
+class ProcessMemory:
+    """Reuse per-thread buffers while returning independent read snapshots."""
+    def __init__(self, kernel, process):
+        self.kernel = kernel
+        self.process = process
+        self.local = threading.local()
 
-def read(address, size):
-    buffer = C.create_string_buffer(size)
-    count = C.c_size_t()
-    if not address or not KERNEL.ReadProcessMemory(PROCESS, address, buffer, size, C.byref(count)) or count.value != size:
-        raise RuntimeError(f"Camera memory is unavailable at {address:#x}")
-    return buffer.raw
+    def _state(self):
+        state = getattr(self.local, "state", None)
+        if state is None:
+            write_count = C.c_size_t()
+            state = {"buffers": {}, "write_count": write_count,
+                     "write_pointer": C.byref(write_count)}
+            self.local.state = state
+        return state
+
+    def _buffer(self, state, size):
+        cached = state["buffers"].get(size)
+        if cached is None:
+            count = C.c_size_t()
+            cached = (C.create_string_buffer(size), count, C.byref(count))
+            state["buffers"][size] = cached
+        cached[1].value = 0
+        return cached
+
+    def read(self, address, size):
+        buffer, count, pointer = self._buffer(self._state(), size)
+        if not address or not self.kernel.ReadProcessMemory(self.process, address, buffer, size, pointer) or count.value != size:
+            raise RuntimeError(f"Camera memory is unavailable at {address:#x}")
+        return buffer.raw
+
+    def write(self, address, data):
+        state = self._state()
+        size = len(data)
+        count = state["write_count"]
+        count.value = 0
+        # ctypes keeps these immutable bytes alive until the native call returns.
+        if not address or not self.kernel.WriteProcessMemory(self.process, address, data, size, state["write_pointer"]) or count.value != size:
+            raise RuntimeError("Could not apply camera transform")
 
 
-def write(address, data):
-    count = C.c_size_t()
-    buffer = C.create_string_buffer(data)
-    if not KERNEL.WriteProcessMemory(PROCESS, address, buffer, len(data), C.byref(count)) or count.value != len(data):
-        raise RuntimeError("Could not apply camera transform")
+MEMORY = ProcessMemory(KERNEL, PROCESS)
+read = MEMORY.read
+write = MEMORY.write
 
 
 def data_address():
@@ -411,6 +441,28 @@ def camera_clearance(desired, up, hit, previous, dt):
     return add(desired, mul(up, lift)), lift
 
 
+class TerrainProbeCache:
+    """Sample terrain at 10 Hz; resolve against the cached ground every frame."""
+    def __init__(self):
+        self.next_check = 0.0
+        self.owner = None
+        self.hit = None
+        self.clearance = None
+
+    def place(self, desired, up, owner, dt, cut, now, probe):
+        changed_owner = owner != self.owner
+        if cut or changed_owner or now >= self.next_check:
+            hit = probe()
+            self.hit = hit
+            self.owner = owner
+            self.next_check = now + 0.1
+        # Cache a ground position, not a lift: a descending camera must stay
+        # above that ground even on frames where we skip the native check.
+        resolved, self.clearance = camera_clearance(
+            desired, up, self.hit, None if cut or changed_owner else self.clearance, dt)
+        return resolved
+
+
 class CameraCollision:
     # cTkRaycastJob ABI verified in the SHA256-locked executable above.
     # Use the terrain height-test group and synchronous runner, never job waits.
@@ -425,12 +477,17 @@ class CameraCollision:
     def __init__(self):
         self.job = C.create_string_buffer(0x80)
         self.construct(self.job)
-        self.clearance = None
+        self.terrain_cache = TerrainProbeCache()
 
     def close(self):
         self.destroy(self.job)
 
     def place(self, desired, up, origin, owner, dt, cut):
+        return self.terrain_cache.place(
+            desired, up, owner, dt, cut, time.perf_counter(),
+            lambda: self._probe(desired, up, origin, owner))
+
+    def _probe(self, desired, up, origin, owner):
         world = self.get_world(owner + 0x72D088)
         if not world:
             raise ValueError("Camera collision world unavailable")
@@ -446,15 +503,12 @@ class CameraCollision:
         blocked = struct.unpack("<H", read(ray + 0x70, 2))[0] != 0
         if blocked:
             self.get_point(self.job, C.byref(hit), 0, 0)
-        resolved, self.clearance = camera_clearance(desired, up,
-            add(xyz(hit.local), xyz(hit.offset)) if blocked else None,
-            None if cut else self.clearance, dt)
-        return resolved
+        return add(xyz(hit.local), xyz(hit.offset)) if blocked else None
 
 
 class CinematicCamera(Mod):
     __author__ = "Tyler Kershner"
-    __version__ = "0.4.1"
+    __version__ = "0.4.2"
     __description__ = "Standalone on-foot cinematic camera: Insert toggle, Home next shot, End stop."
 
     def __init__(self):
@@ -657,6 +711,8 @@ class CinematicCamera(Mod):
     @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
                  func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
     def before_movement(self, this, timestep):
+        if not self.enabled:
+            return
         try:
             pending = self.overlay.pending
             if not self.enabled or pending is None or self._movement_camera is not None:
@@ -715,6 +771,8 @@ class CinematicCamera(Mod):
     @manual_hook("Cinematic.FinalCameraManagerUpdate", offset=CAMERA_MANAGER_UPDATE,
                  func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
     def before_camera(self, this, timestep):
+        if self.overlay.pending is None:
+            return
         try:
             # Restore only at the start of the next camera-manager update. Restoring
             # in Application.Update can erase our pose before the renderer uses it.
@@ -750,7 +808,9 @@ class CinematicCamera(Mod):
             distance = length(sub(position(transforms.committed), player_pos))
             if not 0 <= distance < 100:
                 raise ValueError(f"Native camera/player coordinate mismatch ({distance:.2f} m)")
-            now = time.monotonic()
+            # Python 3.10 on Windows uses a ~15.6ms monotonic tick. Use QPC
+            # for animation deltas to avoid uneven motion.
+            now = time.perf_counter()
             elapsed = now - self.last_camera if self.last_camera else 1 / 60
             # Snap framing after a teleport without changing the user's toggle.
             if (self.director.last_player is not None and
