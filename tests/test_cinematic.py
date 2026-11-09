@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import random
+import re
 import tempfile
 import threading
 import time
@@ -27,9 +28,24 @@ pure = [node for node in source.body if
         (isinstance(node, ast.ClassDef) and node.name in {"Pose", "Overlay", "Director", "TerrainProbeCache", "ProcessMemory"}) or
         (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in names for target in node.targets))]
 # Only geometry/settings helpers are called; native memory helpers remain unused.
-camera = dict(math=math, random=random, dataclass=dataclass, queue=queue, time=time, json=json, C=C, threading=threading)
+camera = dict(math=math, random=random, dataclass=dataclass, queue=queue, time=time, json=json, C=C, threading=threading, re=re)
 exec(compile(ast.Module(body=pure, type_ignores=[]), "cinematic_geometry", "exec"), camera)
 Director = camera["Director"]
+
+
+class NativeSignatureTests(unittest.TestCase):
+    def test_relative_address_and_function_position_can_change(self):
+        find = camera["find_unique_code"]
+        signature = "48 8B 05 ? ? ? ? 2E 5B"
+        for prefix, displacement in ((b"", b"\x01\x02\x03\x04"),
+                                     (b"padding", b"\x0a\xff\x00\x80")):
+            data = prefix + b"\x48\x8b\x05" + displacement + b".[" + b"suffix"
+            self.assertEqual(find(data, signature, "test"), len(prefix))
+
+    def test_missing_or_ambiguous_code_is_not_used_as_a_hook(self):
+        for data in (b"\x90", b"\x48\x8b\x48\x8b"):
+            with self.assertRaisesRegex(RuntimeError, "expected one code match"):
+                camera["find_unique_code"](data, "48 8B", "test")
 
 
 class FramingTests(unittest.TestCase):
@@ -164,7 +180,7 @@ class MovementHookTests(unittest.TestCase):
             self.bytes_at_camera = data
 
         namespace = dict(time=time,
-                         PLAYER_OFFSET=50, data_address=lambda: 100,
+                         PLAYER_OFFSET=50, data_address=lambda: 100, get_addressof=lambda this: this,
                          read=lambda address, size: self.bytes_at_camera, write=write_native)
         mod_class = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "CinematicCamera")
         for name in ("before_movement", "after_movement"):

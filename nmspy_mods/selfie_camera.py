@@ -26,10 +26,11 @@ import traceback
 from typing import Annotated
 
 from pymhf import Mod
-from pymhf.core.hooking import Structure, function_hook, on_key_pressed, static_function_hook
+from pymhf.core.hooking import Structure, function_hook, on_key_pressed
 
 import nmspy.data.basic_types as basic
 from nmspy.common import gameData
+from nmspy.data.types import Engine
 
 from shared_state import _make_logger
 
@@ -103,126 +104,40 @@ class _PhotoModeCameraBehaviour(Structure):
     ) -> None: ...
 
 
-class _EngineCosmos(Structure):
-    @static_function_hook(
-        "40 57 48 83 EC 20 49 8B F8 44 8B C1 41 C1 E8 13 45 85 C0 "
-        "0F 84 ? ? ? ? 8B C1 25 FF FF 07 00 3D FF FF 07 00 0F 84 ? ? ? ? "
-        "81 E1 FF FF 07 00 48 89 5C 24 30 48 8B 1D ? ? ? ?"
-    )
-    @staticmethod
-    def GetNodeMatrices(
-        node: ctypes.c_uint32,
-        local: ctypes.c_void_p,
-        absolute: ctypes._Pointer[basic.cTkMatrix34],
-    ) -> None: ...
-
-    @static_function_hook(
-        "48 89 5C 24 ? 57 48 81 EC ? ? ? ? 0F 29 74 24 ? 8B DA 48 8B F9 "
-        "E8 24 08 AD FD 0F 28 05 ? ? ? ? 4C 8D 44 24"
-    )
-    @staticmethod
-    def GetNodePhysRelMatrix(
-        result: ctypes._Pointer[basic.cTkPhysRelMat34],
-        node: ctypes.c_uint32,
-    ) -> None: ...
-
-
 def _get_player_matrix(player):
-    matrix = basic.cTkPhysRelMat34()
-    _EngineCosmos.GetNodePhysRelMatrix(
-        ctypes.byref(matrix),
-        ctypes.c_uint32(int(player.mRootNode.lookupInt)),
-    )
-    return matrix
+    """Use NMSpy's player graphics matrix for the diagnostic snapshot."""
+    return player.mGraphicsMatrix
 
 
 def _get_player_absolute_matrix(player):
     matrix = basic.cTkMatrix34()
-    _EngineCosmos.GetNodeMatrices(
-        ctypes.c_uint32(int(player.mRootNode.lookupInt)),
-        ctypes.c_void_p(),
+    Engine.GetNodeAbsoluteTransMatrix(
+        player.mRootNode,
         ctypes.byref(matrix),
     )
     return matrix
 
 
 def _probe_player_node_tree(player, maximum=160):
-    """Read a bounded snapshot of the live player graphics-node hierarchy."""
-    kernel32 = ctypes.windll.kernel32
-    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
-    image_base = kernel32.GetModuleHandleW("NMS.exe")
-    if not image_base:
-        raise RuntimeError("NMS module base is unavailable")
-
-    # Resolve the node-manager global from the live GetNodeMatrices function.
-    # The global moves between NMS patches, so do not keep an executable offset.
-    dos = ctypes.c_uint32.from_address(image_base + 0x3C).value
-    nt = image_base + dos
-    image_size = ctypes.c_uint32.from_address(nt + 0x50).value
-    image = ctypes.string_at(image_base, image_size)
-    signature = bytes.fromhex(
-        "40 57 48 83 EC 20 49 8B F8 44 8B C1 41 C1 E8 13 45 85 C0"
-    )
-    function_offset = image.find(signature)
-    if function_offset < 0:
-        raise RuntimeError("GetNodeMatrices signature was not found")
-    manager_load = image.find(b"\x48\x8b\x1d", function_offset, function_offset + 160)
-    if manager_load < 0:
-        raise RuntimeError("scene-node manager reference was not found")
-    displacement = ctypes.c_int32.from_buffer_copy(
-        image[manager_load + 3 : manager_load + 7]
-    ).value
-    manager_global = image_base + manager_load + 7 + displacement
-    manager = ctypes.c_void_p.from_address(manager_global).value
-    if not manager:
-        raise RuntimeError("scene-node manager is unavailable")
-    lookup = ctypes.c_void_p.from_address(manager + 0xE8).value
-    records = ctypes.c_void_p.from_address(manager + 0x70).value
-    objects = ctypes.c_void_p.from_address(manager + 0x90).value
-    root_handle = int(player.mRootNode.lookupInt)
-    root_index = ctypes.c_int32.from_address(
-        lookup + (root_handle & 0x7FFFF) * 4
-    ).value
-
-    def node_details(index):
-        obj = ctypes.c_void_p.from_address(objects + index * 8).value
-        handle = ctypes.c_uint32.from_address(obj + 8).value
-        owner = ctypes.c_void_p.from_address(obj + 0x20).value
-        string = ctypes.c_void_p.from_address(owner).value if owner else None
-        name = ""
-        if string:
-            length = ctypes.c_size_t.from_address(string + 0x18).value
-            chars = (
-                ctypes.c_void_p.from_address(string).value
-                if length > 15
-                else string
-            )
-            if chars and length < 1024:
-                name = ctypes.string_at(chars, length).decode(errors="replace")
-                name = name.split("\x00", 1)[0]
-        matrix = basic.cTkMatrix34()
-        _EngineCosmos.GetNodeMatrices(
-            ctypes.c_uint32(handle), ctypes.c_void_p(), ctypes.byref(matrix)
-        )
-        record = records + index * 20
-        first_child = ctypes.c_int32.from_address(record + 8).value
-        next_sibling = ctypes.c_int32.from_address(record + 0x10).value
-        return handle, name, _xyz(matrix.pos), first_child, next_sibling
-
+    """Read a bounded node hierarchy through NMSpy's scene-node API."""
     rows = []
-    stack = [(root_index, 0)]
+    stack = [(int(player.mRootNode.lookupInt), 0)]
     seen = set()
     while stack and len(rows) < maximum:
-        index, depth = stack.pop()
-        if index < 0 or index in seen:
+        handle, depth = stack.pop()
+        if handle in (0, 0xFFFFFFFF) or handle in seen:
             continue
-        seen.add(index)
-        handle, name, position, child, sibling = node_details(index)
-        rows.append((depth, index, handle, name, position))
-        if sibling >= 0:
-            stack.append((sibling, depth))
-        if child >= 0:
-            stack.append((child, depth + 1))
+        seen.add(handle)
+        node = basic.TkHandle(lookupInt=handle)
+        name = str(Engine.GetNodeName(node))
+        matrix = basic.cTkMatrix34()
+        Engine.GetNodeAbsoluteTransMatrix(node, ctypes.byref(matrix))
+        child, sibling = basic.TkHandle(), basic.TkHandle()
+        Engine.GetNodeFirstChild(ctypes.byref(child), node)
+        Engine.GetNodeNextSibling(ctypes.byref(sibling), node)
+        rows.append((depth, handle, handle, name, _xyz(matrix.pos)))
+        stack.append((int(sibling.lookupInt), depth))
+        stack.append((int(child.lookupInt), depth + 1))
     return rows
 
 
@@ -233,14 +148,12 @@ def _get_player_model_matrix(player):
     if _player_model_handle is not None and _player_anchor_handle is not None:
         matrix = basic.cTkMatrix34()
         anchor = basic.cTkMatrix34()
-        _EngineCosmos.GetNodeMatrices(
-            ctypes.c_uint32(_player_model_handle),
-            ctypes.c_void_p(),
+        Engine.GetNodeAbsoluteTransMatrix(
+            basic.TkHandle(lookupInt=_player_model_handle),
             ctypes.byref(matrix),
         )
-        _EngineCosmos.GetNodeMatrices(
-            ctypes.c_uint32(_player_anchor_handle),
-            ctypes.c_void_p(),
+        Engine.GetNodeAbsoluteTransMatrix(
+            basic.TkHandle(lookupInt=_player_anchor_handle),
             ctypes.byref(anchor),
         )
         if (
@@ -273,11 +186,11 @@ def _get_player_model_matrix(player):
     )
     matrix = basic.cTkMatrix34()
     anchor = basic.cTkMatrix34()
-    _EngineCosmos.GetNodeMatrices(
-        ctypes.c_uint32(_player_model_handle), ctypes.c_void_p(), ctypes.byref(matrix)
+    Engine.GetNodeAbsoluteTransMatrix(
+        basic.TkHandle(lookupInt=_player_model_handle), ctypes.byref(matrix)
     )
-    _EngineCosmos.GetNodeMatrices(
-        ctypes.c_uint32(_player_anchor_handle), ctypes.c_void_p(), ctypes.byref(anchor)
+    Engine.GetNodeAbsoluteTransMatrix(
+        basic.TkHandle(lookupInt=_player_anchor_handle), ctypes.byref(anchor)
     )
     _set_vector(matrix.pos, _xyz(anchor.pos))
     return matrix
@@ -575,7 +488,7 @@ def _finish_pose(camera, pose, basis):
 class SelfieCamera(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Apply the permanent exact selfie camera pose."
-    __version__ = "2.8-patch-node-manager"
+    __version__ = "3.0-nmspy-scene-nodes"
 
     def __init__(self):
         super().__init__()
@@ -617,8 +530,8 @@ class SelfieCamera(Mod):
                 phys_relative = _get_player_matrix(player)
                 absolute = _get_player_absolute_matrix(player)
                 _log.info(
-                    "Selfie player transforms handle=%#x phys_relative=%s absolute=%s "
-                    "phys_position=%s absolute_position=%s",
+                    "Selfie player transforms handle=%#x graphics=%s absolute=%s "
+                    "graphics_position=%s absolute_position=%s",
                     int(player.mRootNode.lookupInt),
                     tuple(_xyz(axis) for axis in (phys_relative.right, phys_relative.up, phys_relative.at)),
                     tuple(_xyz(axis) for axis in (absolute.right, absolute.up, absolute.at)),

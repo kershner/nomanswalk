@@ -13,12 +13,12 @@
 # [tool.pymhf.gui]
 # shown = false
 # ///
-"""Standalone, opt-in cinematic tracking for the verified desktop NMS build."""
+"""Standalone, opt-in cinematic tracking for desktop NMS."""
 import ctypes as C
 import json
-import hashlib
 import math
 import random
+import re
 from dataclasses import dataclass
 import logging
 from logging.handlers import RotatingFileHandler
@@ -33,17 +33,73 @@ from pymhf.core import _internal
 from pymhf.core.hooking import manual_hook, on_key_pressed
 from pymhf.gui.decorators import FLOAT, BOOLEAN, STRING, gui_button, gui_group
 from nmspy.data.basic_types import cTkPhysRelMat34, cTkPhysRelVec3
+from nmspy.common import gameData
+import nmspy.data.types as nms
+from pymhf.core.memutils import get_addressof
 
-# Verified against this executable. Refuse another build before installing hooks.
-SHA256 = "a77fc29877789c3da9181afeb5941b9b85a27d3df24919a24403cf8e194c6109"
-APPLICATION_UPDATE = 0x2DD3E0
-APPLICATION_DATA_GLOBAL = 0x6F6B208
+# Match function code while allowing relative addresses to move between patches.
+# These describe calling conventions and layouts, rather than an EXE version.
+NATIVE_SIGNATURES = {
+    "camera_update": "40 53 48 83 EC 30 0F 29 74 24 20 48 8B D9 0F 28 F1 E8 ? ? ? ? 48 8B 05 ? ? ? ? 48 85 C0 75 ? 0F 10 05 ? ? ? ? 66 48 0F 7E C1",
+    "ray_construct": "48 89 5C 24 08 57 48 83 EC 20 66 0F 6F 05 ? ? ? ? 33 FF 48 89 39 48 8B D9 48 89 79 08 0F 11 41 40 48 89 79 50 48 89 79 58 89 79 60",
+    "ray_destroy": "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 80 79 7C 00 48 8B D9 74 ? E8 ? ? ? ? 48 8D 4B 68 C6 43 7D 00 E8 ? ? ? ? 48 8B 53 70",
+    "ray_initialise": "48 83 EC 38 48 8B 44 24 68 4C 8B 90 38 0A 00 00 48 8D 44 24 68 48 89 44 24 28 48 8B 44 24 60 48 89 44 24 20 4C 89 54 24 68 E8 ? ? ? ?",
+    "ray_set": "48 89 5C 24 10 48 89 6C 24 18 56 41 56 41 57 48 83 EC 40 8B C2 48 8B F1 48 8B 09 4D 8B F1 48 69 E8 D0 00 00 00 4D 8B F8 48 85 C9 74 ?",
+    "ray_run": "48 89 5C 24 10 56 48 83 EC 20 33 F6 48 8B D9 39 71 60 76 ? 48 89 7C 24 30 0F 1F 80 00 00 00 00 48 8B 43 58 48 8D 3C B6 48 C1 E7 05 C6 04 07 01",
+    "ray_point": "48 89 5C 24 08 57 48 83 EC 20 41 8B C0 48 8B FA 4C 69 C0 D0 00 00 00 4C 03 41 70 45 85 C9 75 ? 49 8D 58 20 EB ? 41 8D 59 FF 48 C1 E3 06",
+    "physics_world": "48 8B 11 48 8D 0D ? ? ? ? E9 ? ? ? ? CC 48 8B D1 48 8D 0D ? ? ? ? E9 ? ? ? ? CC 48 8B 05 ? ? ? ? C3",
+}
+
+
+def find_unique_code(data, signature, name):
+    pattern = b"".join(b"." if token == "?" else re.escape(bytes([int(token, 16)]))
+                       for token in signature.split())
+    matches = list(re.finditer(pattern, data, re.DOTALL))
+    if len(matches) != 1:
+        raise RuntimeError(f"Cannot resolve cinematic {name}: expected one code match, found {len(matches)}")
+    return matches[0].start()
+
+
+def resolve_native_addresses(path):
+    import pefile
+
+    raw = Path(path).read_bytes()
+    with pefile.PE(data=raw, fast_load=True) as pe:
+        text = next(section for section in pe.sections if section.Name.startswith(b".text"))
+        code = text.get_data()
+        addresses = {name: text.VirtualAddress + find_unique_code(code, signature, name)
+                     for name, signature in NATIVE_SIGNATURES.items()}
+        # MSVC RTTI identifies the primary camera-manager vtable without a fixed RVA.
+        name_offset = raw.find(b".?AVcGcCameraManager@@\0")
+        if name_offset < 16:
+            raise RuntimeError("Cannot resolve cinematic camera-manager RTTI")
+        descriptor = pe.get_rva_from_offset(name_offset - 16)
+        vtables = set()
+        for match in re.finditer(re.escape(struct.pack("<I", descriptor)), raw):
+            col_offset = match.start() - 12
+            if col_offset < 0:
+                continue
+            col = pe.get_rva_from_offset(col_offset)
+            signature, offset, construction, _, _, self_rva = struct.unpack_from("<6I", raw, col_offset)
+            if (signature, offset, construction, self_rva) != (1, 0, 0, col):
+                continue
+            pointer = struct.pack("<Q", pe.OPTIONAL_HEADER.ImageBase + col)
+            for reference in re.finditer(re.escape(pointer), raw):
+                vtable = pe.get_rva_from_offset(reference.start()) + 8
+                update = struct.unpack("<Q", pe.get_data(vtable + 16, 8))[0]
+                if update == pe.OPTIONAL_HEADER.ImageBase + addresses["camera_update"]:
+                    vtables.add(vtable)
+        if len(vtables) != 1:
+            raise RuntimeError("Cannot resolve cinematic camera-manager vtable")
+        addresses["camera_vtable"] = vtables.pop()
+        return addresses
+
+
+NATIVE = resolve_native_addresses(_internal.BINARY_PATH)
 PLAYER_OFFSET = 0x72CDE0
 PLAYER_GRAPHICS = 0x310
 PLAYER_SPAWNED = 0x3160
 PLAYER_MODE = 0x72B6CC
-if hashlib.sha256(Path(_internal.BINARY_PATH).read_bytes()).hexdigest() != SHA256:
-    raise RuntimeError("Unsupported NMS.exe; cinematic camera hooks need revalidation")
 
 DEFAULT_SETTINGS = {
     "maximum_shot_seconds": 40.0,
@@ -320,13 +376,10 @@ ROOT = Path(__file__).resolve().parent
 SETTINGS_FILE = ROOT / "cinematic_camera_settings.json"
 STATUS_FILE = ROOT / "cinematic_camera_status.json"
 REQUEST_FILE = ROOT / "cinematic_camera_request.json"
-# Verified in the same SHA256-locked executable as build_py. The manager
-# runs every active behaviour before returning; a behaviour-level hook is too early.
-CAMERA_MANAGER_UPDATE = 0x69E0F0
-CAMERA_MANAGER_VTABLE = 0x4B18400
-# cGcSimulation::Update calls this with its player (+0x25F860) and dt in
-# xmm1 at RVA 0x13E3E5B. Verified against the locked executable above.
-PLAYER_UPDATE = 0x1476AD0
+# The manager runs every active behaviour before returning;
+# a behaviour-level hook is too early.
+CAMERA_MANAGER_UPDATE = NATIVE["camera_update"]
+CAMERA_MANAGER_VTABLE = NATIVE["camera_vtable"]
 LOG = logging.getLogger("StandaloneCinematicCamera")
 LOG.setLevel(logging.WARNING)
 if not LOG.handlers:
@@ -390,7 +443,8 @@ write = MEMORY.write
 
 
 def data_address():
-    return struct.unpack("<Q", read(BASE + APPLICATION_DATA_GLOBAL, 8))[0]
+    data = gameData.data
+    return C.addressof(data) if data is not None else 0
 
 
 def xyz(vector):
@@ -464,15 +518,15 @@ class TerrainProbeCache:
 
 
 class CameraCollision:
-    # cTkRaycastJob ABI verified in the SHA256-locked executable above.
+    # cTkRaycastJob ABI used by these native raycast functions.
     # Use the terrain height-test group and synchronous runner, never job waits.
-    construct = native(0x2CE0EC0, C.c_void_p, C.c_void_p)
-    destroy = native(0x2CE1510, None, C.c_void_p)
-    initialise = native(0x2CF28C0, None, C.c_void_p, C.c_int, C.c_char_p, C.c_int, C.c_char_p, C.c_void_p)
-    set_ray = native(0x2CF7BF0, None, C.c_void_p, C.c_int, C.c_void_p, C.c_void_p)
-    run = native(0x2CF5B70, None, C.c_void_p)
-    get_point = native(0x2CEA9A0, C.c_void_p, C.c_void_p, C.c_void_p, C.c_int, C.c_int)
-    get_world = native(0x2D5C670, C.c_void_p, C.c_void_p)
+    construct = native(NATIVE["ray_construct"], C.c_void_p, C.c_void_p)
+    destroy = native(NATIVE["ray_destroy"], None, C.c_void_p)
+    initialise = native(NATIVE["ray_initialise"], None, C.c_void_p, C.c_int, C.c_char_p, C.c_int, C.c_char_p, C.c_void_p)
+    set_ray = native(NATIVE["ray_set"], None, C.c_void_p, C.c_int, C.c_void_p, C.c_void_p)
+    run = native(NATIVE["ray_run"], None, C.c_void_p)
+    get_point = native(NATIVE["ray_point"], C.c_void_p, C.c_void_p, C.c_void_p, C.c_int, C.c_int)
+    get_world = native(NATIVE["physics_world"], C.c_void_p, C.c_void_p)
 
     def __init__(self):
         self.job = C.create_string_buffer(0x80)
@@ -508,13 +562,15 @@ class CameraCollision:
 
 class CinematicCamera(Mod):
     __author__ = "Tyler Kershner"
-    __version__ = "0.4.2"
+    __version__ = "0.4.5"
     __description__ = "Standalone on-foot cinematic camera: Insert toggle, Home next shot, End stop."
 
     def __init__(self):
         super().__init__()
         if C.sizeof(cTkPhysRelMat34) != 0x50 or C.sizeof(CameraTransforms) != 0xF0:
             raise RuntimeError("Unsupported NMSpy camera structure layout")
+        LOG.warning("Cinematic camera %s resolved native addresses: %s", self.__version__,
+                    {name: hex(address) for name, address in NATIVE.items()})
         self.settings = self._load_settings()
         self.director = Director(settings=self.settings)
         self.actions = queue.SimpleQueue()
@@ -701,6 +757,8 @@ class CinematicCamera(Mod):
                 "enabled": self.enabled,
                 "timestamp": time.time(),
                 "control_protocol": 1,
+                "mod_version": self.__version__,
+                "reason": self.reason,
             }), encoding="utf-8")
             temporary.replace(STATUS_FILE)
         except OSError as exc:
@@ -708,8 +766,7 @@ class CinematicCamera(Mod):
                 LOG.warning("Could not publish cinematic camera status: %s", exc)
                 self.last_status_error = now
 
-    @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
-                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="before")
+    @nms.cGcPlayer.Update.before
     def before_movement(self, this, timestep):
         if not self.enabled:
             return
@@ -718,7 +775,7 @@ class CinematicCamera(Mod):
             if not self.enabled or pending is None or self._movement_camera is not None:
                 return
             address, original, cinematic, owner = pending
-            if this != owner + PLAYER_OFFSET or data_address() != owner:
+            if get_addressof(this) != owner + PLAYER_OFFSET or data_address() != owner:
                 return
             if read(address, len(cinematic)) != cinematic:
                 return
@@ -730,8 +787,7 @@ class CinematicCamera(Mod):
         except Exception as exc:
             self._report_error(exc)
 
-    @manual_hook("Cinematic.PlayerMovementUpdate", offset=PLAYER_UPDATE,
-                 func_def=FUNCDEF(None, [C.c_void_p, C.c_float]), detour_time="after")
+    @nms.cGcPlayer.Update.after
     def after_movement(self, this, timestep):
         pending, self._movement_camera = self._movement_camera, None
         if pending is None:
@@ -746,8 +802,7 @@ class CinematicCamera(Mod):
         except Exception as exc:
             self._report_error(exc)
 
-    @manual_hook("Cinematic.ApplicationUpdate", offset=APPLICATION_UPDATE,
-                 func_def=FUNCDEF(None, [C.c_void_p]), detour_time="before")
+    @nms.cGcApplication.Update.before
     def before_frame(self, this):
         try:
             while not self.actions.empty():
