@@ -562,7 +562,7 @@ class CameraCollision:
 
 class CinematicCamera(Mod):
     __author__ = "Tyler Kershner"
-    __version__ = "0.4.5"
+    __version__ = "0.4.6"
     __description__ = "Standalone on-foot cinematic camera: Insert toggle, Home next shot, End stop."
 
     def __init__(self):
@@ -766,8 +766,8 @@ class CinematicCamera(Mod):
                 LOG.warning("Could not publish cinematic camera status: %s", exc)
                 self.last_status_error = now
 
-    @nms.cGcPlayer.Update.before
-    def before_movement(self, this, timestep):
+    @nms.cGcSimulation.Update.before
+    def before_movement(self, this, mode, timestep):
         if not self.enabled:
             return
         try:
@@ -775,27 +775,30 @@ class CinematicCamera(Mod):
             if not self.enabled or pending is None or self._movement_camera is not None:
                 return
             address, original, cinematic, owner = pending
-            if get_addressof(this) != owner + PLAYER_OFFSET or data_address() != owner:
+            simulation = gameData.simulation
+            if (simulation is None or get_addressof(this) != get_addressof(simulation)
+                    or data_address() != owner):
                 return
             if read(address, len(cinematic)) != cinematic:
                 return
-            # The player calculates camera-relative movement here. Give it the
-            # native view, without touching player facing, input, or shot state.
+            # Simulation.Update reads the camera before directly calling the
+            # movement routine. NMSpy's Player.Update is a separate function and
+            # does not cover that path. Restore the native view before either read.
             self._movement_camera = pending
             self.overlay.pending = None
             write(address, original)
         except Exception as exc:
             self._report_error(exc)
 
-    @nms.cGcPlayer.Update.after
-    def after_movement(self, this, timestep):
+    @nms.cGcSimulation.Update.after
+    def after_movement(self, this, mode, timestep):
         pending, self._movement_camera = self._movement_camera, None
         if pending is None:
             return
         try:
             address, original, cinematic, owner = pending
-            # Put the same cinematic pose back before rendering. If native code
-            # changed the camera during movement, let the final manager hook win.
+            # Put the same cinematic pose back before rendering. A new pose from
+            # the final manager hook or a native camera change takes precedence.
             if (self.enabled and self.overlay.pending is None and data_address() == owner
                     and read(address, len(original)) == original):
                 self.overlay.apply(address, original, cinematic, owner, write)

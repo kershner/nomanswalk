@@ -169,6 +169,16 @@ class ProcessMemoryTests(unittest.TestCase):
 
 
 class MovementHookTests(unittest.TestCase):
+    def test_hooks_cover_simulation_camera_reads_and_direct_movement(self):
+        # The native simulation reads the camera and invokes movement directly;
+        # NMSpy's separate Player.Update hook never encloses that work.
+        mod_class = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "CinematicCamera")
+        for name, when in (("before_movement", "before"), ("after_movement", "after")):
+            method = next(n for n in mod_class.body if isinstance(n, ast.FunctionDef) and n.name == name)
+            self.assertEqual([ast.unparse(d) for d in method.decorator_list],
+                             [f"nms.cGcSimulation.Update.{when}"])
+            self.assertEqual([a.arg for a in method.args.args], ["self", "this", "mode", "timestep"])
+
     def setUp(self):
         self.bytes_at_camera = b"cinematic"
         self.overlay = camera["Overlay"]()
@@ -180,7 +190,8 @@ class MovementHookTests(unittest.TestCase):
             self.bytes_at_camera = data
 
         namespace = dict(time=time,
-                         PLAYER_OFFSET=50, data_address=lambda: 100, get_addressof=lambda this: this,
+                         gameData=SimpleNamespace(simulation=150), data_address=lambda: 100,
+                         get_addressof=lambda this: this,
                          read=lambda address, size: self.bytes_at_camera, write=write_native)
         mod_class = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "CinematicCamera")
         for name in ("before_movement", "after_movement"):
@@ -190,20 +201,36 @@ class MovementHookTests(unittest.TestCase):
         self.hooks = namespace
 
     def test_hooks_restore_native_movement_then_cinematic_view(self):
-        self.hooks["before_movement"](self.mod, 150, 1 / 30)
+        self.hooks["before_movement"](self.mod, 150, 0, 1 / 30)
         self.assertEqual(self.bytes_at_camera, b"original")
         self.assertIsNone(self.overlay.pending)
-        self.hooks["after_movement"](self.mod, 150, 1 / 30)
+        self.hooks["after_movement"](self.mod, 150, 0, 1 / 30)
         self.assertEqual(self.bytes_at_camera, b"cinematic")
         self.assertIsNotNone(self.overlay.pending)
         self.mod._report_error.assert_not_called()
 
     def test_external_camera_change_is_preserved(self):
-        self.hooks["before_movement"](self.mod, 150, 1 / 30)
+        self.hooks["before_movement"](self.mod, 150, 0, 1 / 30)
         self.bytes_at_camera = b"external"
-        self.hooks["after_movement"](self.mod, 150, 1 / 30)
+        self.hooks["after_movement"](self.mod, 150, 0, 1 / 30)
         self.assertEqual(self.bytes_at_camera, b"external")
         self.assertIsNone(self.overlay.pending)
+
+    def test_new_camera_shot_during_simulation_is_not_overwritten(self):
+        self.hooks["before_movement"](self.mod, 150, 0, 1 / 30)
+        self.assertEqual(self.bytes_at_camera, b"original")
+        self.overlay.apply(200, b"original", b"new shot", 100,
+                           self.hooks["write"])
+        self.hooks["after_movement"](self.mod, 150, 0, 1 / 30)
+        self.assertEqual(self.bytes_at_camera, b"new shot")
+        self.assertEqual(self.overlay.pending[2], b"new shot")
+        self.assertIsNone(self.mod._movement_camera)
+
+    def test_unrelated_simulation_does_not_restore_the_camera(self):
+        self.hooks["before_movement"](self.mod, 999, 0, 1 / 30)
+        self.assertEqual(self.bytes_at_camera, b"cinematic")
+        self.assertIsNone(self.mod._movement_camera)
+        self.assertIsNotNone(self.overlay.pending)
 
 
 class TerrainProbeCacheTests(unittest.TestCase):
