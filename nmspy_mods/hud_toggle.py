@@ -21,10 +21,15 @@ import os
 import traceback
 
 from pymhf import Mod
+from pymhf.core import _internal
 from pymhf.core.hooking import on_key_pressed
 from pymhf.gui.decorators import BOOLEAN
 
 from nmspy.common import gameData
+from game_compat import apply_game_layout, user_settings_offset
+
+
+apply_game_layout()
 
 
 _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_toggle.log")
@@ -32,9 +37,6 @@ _LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hud_toggle
 _STRUCT_SIZE = 0x6D90
 # Current cGcApplication::Data size.
 _APP_DATA_SIZE = 0x986710
-# Current game code passes this embedded object to the user-settings save/apply
-# routines. It does not depend on the contents of the user's settings file.
-_USER_SETTINGS_OFFSET = 0x307C08
 # cGcUserSettingsData fields, matching NMSpy 184069.0.
 _HUD_HIDDEN_OFFSET = 0x6D68
 _HUD_MINIMAL_OFFSET = 0x6D69
@@ -160,7 +162,7 @@ def _find_settings(mpdata_addr: int) -> list[int]:
 class HUDToggle(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "Toggle HUDHidden with F5."
-    __version__ = "2.6"
+    __version__ = "2.7"
 
     def __init__(self):
         super().__init__()
@@ -181,7 +183,7 @@ class HUDToggle(Mod):
                 return False
 
             mpdata_addr = ctypes.addressof(app.mpData.contents)
-            settings_addr = mpdata_addr + _USER_SETTINGS_OFFSET
+            settings_addr = mpdata_addr + user_settings_offset(_internal.BINARY_HASH)
             _flog.info(
                 "mpData=0x%X; active user settings=0x%X",
                 mpdata_addr,

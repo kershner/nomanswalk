@@ -33,6 +33,7 @@ from nmspy.data.enums import EnvironmentLocation
 from nmspy.decorators import on_state_change, on_fully_booted
 from nmspy.common import gameData
 from nmspy.engine import GetNodeAbsoluteTransMatrix
+from game_compat import apply_game_layout
 
 from shared_state import (
     NMSModState,
@@ -43,6 +44,8 @@ from shared_state import (
     _write_state,
     get_mod_status,
 )
+
+apply_game_layout()
 
 _slog = _make_logger("StateDetector", "nms_state_logger.log")
 
@@ -1089,7 +1092,7 @@ def _build_full_payload(current_state, env_data, planet_ptrs, standing_idx=-1):
 class StateLogger(Mod):
     __author__ = "Tyler Kershner"
     __description__ = "State logger"
-    __version__ = "1.16-station-name"
+    __version__ = "1.17-game-layout"
 
     state = NMSModState()
 

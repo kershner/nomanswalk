@@ -36,6 +36,9 @@ from nmspy.data.basic_types import cTkPhysRelMat34, cTkPhysRelVec3
 from nmspy.common import gameData
 import nmspy.data.types as nms
 from pymhf.core.memutils import get_addressof
+from game_compat import apply_game_layout, simulation_offset
+
+apply_game_layout()
 
 # Match function code while allowing relative addresses to move between patches.
 # These describe calling conventions and layouts, rather than an EXE version.
@@ -96,10 +99,12 @@ def resolve_native_addresses(path):
 
 
 NATIVE = resolve_native_addresses(_internal.BINARY_PATH)
-PLAYER_OFFSET = 0x72CDE0
+SIMULATION_OFFSET = simulation_offset(_internal.BINARY_HASH)
+PLAYER_OFFSET = SIMULATION_OFFSET + 0x25F860
 PLAYER_GRAPHICS = 0x310
 PLAYER_SPAWNED = 0x3160
-PLAYER_MODE = 0x72B6CC
+PLAYER_MODE = SIMULATION_OFFSET + 0x25E14C
+PLAYER_PHYSICS = PLAYER_OFFSET + 0x2A8
 
 DEFAULT_SETTINGS = {
     "maximum_shot_seconds": 40.0,
@@ -542,7 +547,7 @@ class CameraCollision:
             lambda: self._probe(desired, up, origin, owner))
 
     def _probe(self, desired, up, origin, owner):
-        world = self.get_world(owner + 0x72D088)
+        world = self.get_world(owner + PLAYER_PHYSICS)
         if not world:
             raise ValueError("Camera collision world unavailable")
         self.initialise(self.job, 1, b"cinematic_camera.py", 0, b"CameraCollision.place", world)
