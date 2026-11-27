@@ -99,7 +99,7 @@ def resolve_native_addresses(path):
 
 
 NATIVE = resolve_native_addresses(_internal.BINARY_PATH)
-SIMULATION_OFFSET = simulation_offset(_internal.BINARY_HASH)
+SIMULATION_OFFSET = simulation_offset()
 PLAYER_OFFSET = SIMULATION_OFFSET + 0x25F860
 PLAYER_GRAPHICS = 0x310
 PLAYER_SPAWNED = 0x3160

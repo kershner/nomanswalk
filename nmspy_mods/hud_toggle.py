@@ -21,7 +21,6 @@ import os
 import traceback
 
 from pymhf import Mod
-from pymhf.core import _internal
 from pymhf.core.hooking import on_key_pressed
 from pymhf.gui.decorators import BOOLEAN
 
@@ -183,7 +182,7 @@ class HUDToggle(Mod):
                 return False
 
             mpdata_addr = ctypes.addressof(app.mpData.contents)
-            settings_addr = mpdata_addr + user_settings_offset(_internal.BINARY_HASH)
+            settings_addr = mpdata_addr + user_settings_offset()
             _flog.info(
                 "mpData=0x%X; active user settings=0x%X",
                 mpdata_addr,
